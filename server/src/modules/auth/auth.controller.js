@@ -44,6 +44,12 @@ export function createAuthController(auth, config) {
       res.clearCookie(refreshCookieName(req.context.store), refreshCookieOptions(config, req.context.store));
       sendSuccess(res, { code: 'PASSWORD_RESET' });
     },
+    async changePassword(req, res) {
+      const { currentPassword, newPassword } = req.validated.body;
+      await auth.changePassword(req.context.store, req.auth, currentPassword, newPassword);
+      res.clearCookie(refreshCookieName(req.context.store), refreshCookieOptions(config, req.context.store));
+      sendSuccess(res, { code: 'PASSWORD_CHANGED' });
+    },
     async handoverSuperAdmin(req, res) {
       const data = await auth.handoverSuperAdmin(req.context.store, req.auth, req.validated.body.userId);
       res.clearCookie(refreshCookieName(req.context.store), refreshCookieOptions(config, req.context.store));

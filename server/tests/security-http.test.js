@@ -58,6 +58,7 @@ test('authenticated quota follows the account across tokens/IPs/routes while iso
 test('sensitive account quotas cannot be bypassed through case/trailing slash or changing IP', async t => {
   const request = await serve(t, protectedRouter(), 1); const objectId = 'a'.repeat(24);
   for (const [path, count, store] of [
+    ['/api/v1/b2c/auth/change-password', 10, 'b2c'],
     [`/api/v1/admin/b2c/media/product/${objectId}`, 60, 'b2c'],
     [`/api/v1/b2c/cart/checkout/${objectId}/proof`, 20, 'b2c'],
     [`/api/v1/b2b/leads/drafts/${objectId}/images`, 30, 'b2b'],

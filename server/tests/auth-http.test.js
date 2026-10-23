@@ -37,6 +37,75 @@ async function fixture(t, { production = false, emailMissing = false } = {}) {
   } };
 }
 
+test('dashboard creation is superAdmin-only in each store; customers change handed-over passwords without SMTP', async t => {
+  const f = await fixture(t, { emailMissing: true, production: true });
+  for (const store of ['b2c', 'b2b']) {
+    const { input: owner } = await f.verified(store);
+    await f.auth.provisionSuperAdmin(store, owner.email);
+    const ownerLogin = await f.request(`${store}/auth/login`, { body: { email: owner.email, password: owner.password } });
+    const token = ownerLogin.result.data.accessToken;
+    const createPath = `admin/${store}/users`;
+    const input = { name: ' New Staff ', email: ' NEW@EXAMPLE.COM ', phone: '+20 (100) 123-4567', password: 'InitialPass123!', role: 'admin' };
+    assert.equal((await f.request(createPath, { body: input })).status, 401);
+    assert.equal((await f.request(`admin/${store === 'b2c' ? 'b2b' : 'b2c'}/users`, { token, body: input })).status, 401);
+    for (const invalid of [{ role: 'superAdmin' }, { role: ['admin'] }, { role: null }, { role: undefined },
+      { password: 'short' }, { password: 'ع'.repeat(37) }, { password: {} }, { email: 'bad' }, { name: ' ' }, { phone: 'bad' }]) {
+      assert.equal((await f.request(createPath, { token, body: { ...input, ...invalid } })).status, 422);
+    }
+    const emailsBefore = f.emails.length;
+    for (const role of ['admin', 'moderator', 'user']) {
+      const email = `${role}@example.com`;
+      const created = await f.request(createPath, { token, body: { ...input, email: ` ${email.toUpperCase()} `, role,
+        store: 'other', status: 'blocked', emailVerified: false, authVersion: 90, passwordHash: 'injected' } });
+      assert.equal(created.status, 201);
+      assert.equal(created.headers.get('cache-control'), 'no-store');
+      assert.equal(created.headers.get('set-cookie'), null);
+      assert.deepEqual(Object.keys(created.result.data).sort(), ['id', 'store', 'name', 'email', 'phone', 'role', 'emailVerified', 'status', 'createdAt', 'deletedAt'].sort());
+      assert.equal(created.result.data.email, email);
+      assert.equal(created.result.data.phone, '+201001234567');
+      assert.equal(created.result.data.name, 'New Staff');
+      assert.equal(created.result.data.store, store);
+      assert.equal(created.result.data.role, role);
+      assert.equal(created.result.data.status, 'active');
+      assert.equal(created.result.data.emailVerified, true);
+      assert.equal(created.result.data.deletedAt, null);
+      const login = await f.request(`${store}/auth/login`, { body: { email, password: input.password } });
+      assert.equal(login.status, 200);
+      const accountToken = login.result.data.accessToken;
+      assert.equal((await f.request(createPath, { token: accountToken, body: input })).status, 403);
+      if (role === 'user') {
+        const changePath = `${store}/auth/change-password`;
+        assert.equal((await f.request(changePath, { body: { currentPassword: input.password, newPassword: 'ChangedPass123!' } })).status, 401);
+        assert.equal((await f.request(changePath, { token: accountToken, body: { currentPassword: input.password, newPassword: 'short' } })).status, 422);
+        assert.equal((await f.request(changePath, { token: accountToken, body: { currentPassword: 'WrongPass123!', newPassword: 'ChangedPass123!' } })).result.code, 'INVALID_CURRENT_PASSWORD');
+        const changed = await f.request(changePath, { token: accountToken, language: 'ar', body: {
+          currentPassword: input.password, newPassword: 'ChangedPass123!', userId: '0'.repeat(24), email: owner.email,
+        } });
+        assert.equal(changed.status, 200);
+        assert.equal(changed.result.code, 'PASSWORD_CHANGED');
+        assert.equal(changed.result.data, null);
+        assert.equal(changed.headers.get('cache-control'), 'no-store');
+        assert.match(changed.result.message, /[\u0600-\u06ff]/);
+        assert.ok(changed.headers.get('set-cookie').includes(`narmer_refresh_${store}=;`));
+        assert.ok(changed.headers.get('set-cookie').includes('HttpOnly'));
+        assert.ok(changed.headers.get('set-cookie').includes('Secure'));
+        assert.equal((await f.request(`${store}/users/me`, { method: 'GET', token: accountToken })).status, 401);
+        const cookie = login.headers.get('set-cookie').split(';')[0];
+        assert.equal((await f.request(`${store}/auth/refresh`, { cookie, origin: 'https://shop.example' })).status, 401);
+        assert.equal((await f.request(`${store}/auth/login`, { body: { email, password: input.password } })).status, 401);
+        assert.equal((await f.request(`${store}/auth/login`, { body: { email, password: 'ChangedPass123!' } })).status, 200);
+      }
+    }
+    assert.equal(f.emails.length, emailsBefore);
+    const duplicate = await f.request(createPath, { token, language: 'ar', body: { ...input, email: 'ADMIN@example.com' } });
+    assert.equal(duplicate.status, 409);
+    assert.equal(duplicate.result.code, 'ACCOUNT_EMAIL_EXISTS');
+    assert.match(duplicate.result.message, /[\u0600-\u06ff]/);
+  }
+  const logs = JSON.stringify(f.logs);
+  assert.ok(!logs.includes('InitialPass123!') && !logs.includes('ChangedPass123!'));
+});
+
 test('HTTP signup/OTP/login/profile respects whitelist, cookie security, and store boundaries', async t => {
   const f = await fixture(t, { production: true });
   const input = { name: '  Customer  ', email: ' CUSTOMER@EXAMPLE.COM ', phone: '+201001234567', password: 'password123' };

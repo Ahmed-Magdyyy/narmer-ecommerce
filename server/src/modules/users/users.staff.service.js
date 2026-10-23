@@ -2,12 +2,33 @@ import { AppError } from '../../shared/errors/app-error.js';
 import { runTransaction } from '../../shared/utils/transaction.js';
 import { usersRepository } from './users.repository.js';
 import { publicUser } from './users.service.js';
+import { hashPassword } from '../auth/auth.crypto.js';
 
 const staffView = user => ({ ...publicUser(user), status: user.status,
   createdAt: user.createdAt, deletedAt: user.deletedAt ?? null });
 
 export function createStaffUsersService({ auth, repository = usersRepository, transaction = runTransaction }) {
   return {
+    async create(store, identity, input) {
+      await auth.authorizeStaff(store, identity, ['superAdmin']);
+      if (!['admin', 'moderator', 'user'].includes(input.role)) throw new AppError(403, 'FORBIDDEN');
+      const email = input.email.trim().toLowerCase();
+      const passwordHash = await hashPassword(input.password);
+      try {
+        return await transaction(async session => {
+          const actor = await auth.authorizeStaff(store, identity, ['superAdmin'], session);
+          if (await repository.findByEmail(store, email, session)) throw new AppError(409, 'ACCOUNT_EMAIL_EXISTS');
+          const user = await repository.create({ store, name: input.name, email, phone: input.phone,
+            passwordHash, role: input.role, status: 'active', emailVerifiedAt: new Date() }, session);
+          await repository.createAudit({ store, actorId: actor._id, targetId: user._id, action: 'account.created',
+            fields: ['name', 'email', 'phone', 'role'], after: { role: user.role, status: user.status } }, session);
+          return staffView(user);
+        });
+      } catch (error) {
+        if (error.code === 11000) throw new AppError(409, 'ACCOUNT_EMAIL_EXISTS');
+        throw error;
+      }
+    },
     async list(store, identity, input) {
       await auth.authorizeStaff(store, identity, ['superAdmin', 'admin']);
       const paging = { ...input, page: input.page ?? 1, limit: input.limit ?? 20 };

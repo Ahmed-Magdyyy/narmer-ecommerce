@@ -6,7 +6,7 @@ The [Apidog example guide](../../../../docs/apidog/README.md#request-and-respons
 
 Customer notification integration (2026-10-12): [shared email delivery](../../shared/infrastructure/email/EMAIL_DELIVERY_FRONTEND.md) now reuses the same configured SMTP sender for Order/Lead event emails. Auth OTP messages retain their existing direct sending/error/resend/expiry flow and do not enter that queue. Blank customer tracking templates disable customer notifications without disabling SMTP OTP delivery. No Auth route, field, cookie, permission or response changed.
 
-Source checked: 2026-10-13
+Source checked: 2026-10-24
 
 Apidog setup (2026-10-14): both store login/refresh requests save data.accessToken to environment JWT and the store-specific Set-Cookie value to REFRESH using saved post-response scripts. Protected requests use native Bearer Token with {{JWT}}; refresh uses No Auth plus its Cookie/Origin headers. This is desktop testing transport, not browser access to HttpOnly cookies. Read the [complete Apidog setup](../../../../docs/apidog/README.md) for environment isolation, rotation and credential handling.
 
@@ -44,6 +44,7 @@ All endpoints below exist for both `{store}=b2c|b2b`, except handover, which exi
 | POST `/api/v1/{store}/auth/logout` | Access token | 200 `LOGGED_OUT`, clears cookie | 401 `UNAUTHORIZED`; 429 `TOO_MANY_REQUESTS`; 500 `INTERNAL_ERROR` |
 | POST `/api/v1/{store}/auth/forgot-password` | None | 200 `OTP_REQUESTED` | 422 `VALIDATION_ERROR`; 429 `TOO_MANY_REQUESTS`; 503 `EMAIL_UNAVAILABLE`; 500 `INTERNAL_ERROR` |
 | POST `/api/v1/{store}/auth/reset-password` | None | 200 `PASSWORD_RESET`, clears cookie | 400 `INVALID_OTP`; 422 `VALIDATION_ERROR` or `PASSWORD_TOO_LONG`; 429 `TOO_MANY_REQUESTS`; 500 `INTERNAL_ERROR` |
+| POST `/api/v1/{store}/auth/change-password` | Current access token, any same-store role | 200 `PASSWORD_CHANGED`, data:null; clears cookie | 400 `INVALID_CURRENT_PASSWORD`; 401 `UNAUTHORIZED`; 409 `ACCOUNT_CONFLICT`; 422 `VALIDATION_ERROR`; 429 `TOO_MANY_REQUESTS`; 500 `INTERNAL_ERROR` |
 | POST `/api/v1/admin/{store}/auth/super-admin/handover` | Access token, current `superAdmin` | 200 `SUPER_ADMIN_CHANGED`, data below; clears cookie | 401 `UNAUTHORIZED`; 403 `FORBIDDEN`; 409 `INVALID_SUPER_ADMIN_TARGET` or `ACCOUNT_CONFLICT`; 422 `VALIDATION_ERROR`; 500 `INTERNAL_ERROR`; Mongo transaction requirements may yield 503 `TRANSACTIONS_REQUIRED` |
 
 For all requests, malformed JSON is 400 `INVALID_JSON`, bodies over 100 KB are 413 `BODY_TOO_LARGE`, unsupported encoding is 415 `UNSUPPORTED_ENCODING`, and disallowed browser origins can be rejected by CORS as 403 `CORS_DENIED`. These are shared application-level responses.
@@ -231,3 +232,19 @@ Every endpoint in this contract participates in the API-wide effective-IP allowa
 Any endpoint can therefore return the shared 429 TOO_MANY_REQUESTS error, with no data and the normal success:false/code/message/errors/requestId fields. CORS exposes Retry-After (seconds), RateLimit and RateLimit-Policy to allowed browser origins. Preserve current form, IDs, versions, uploaded-file references and private credentials; pause polling/rapid requests and respect Retry-After. A 429 does not trigger token refresh. Resume using the module's documented safe read/replay rules, rather than assuming all mutations are idempotent. No request or response DTO field was added for limiting, and no limit header is a reusable credential.
 
 These counters are local to the confirmed single Node.js process and reset on restart. Shared counters are required before adding workers/servers. This is application abuse protection; external network/HTTP DDoS filtering and verified proxy configuration remain deployment work. Read the [security report](../../../../docs/security.md) for actual proof and remaining acceptance limits.
+
+## Dashboard-created accounts and signed-in password change — 2026-10-24
+
+The [Users contract](../users/USERS_FRONTEND.md) now includes superAdmin-only account creation with a selected admin/moderator/user role and a manually handed-over password. These accounts are active and approved for immediate login without email/OTP, represented by emailVerified:true. This approval is not evidence of mailbox verification. Public registration still creates only user accounts and retains its existing OTP gate.
+
+POST /api/v1/{store}/auth/change-password is available to every authenticated same-store role, including an ordinary B2C user. Required body fields are currentPassword and newPassword: non-null strings,8–72characters and at most72UTF-8bytes each, with no trimming. Both come from the current person's password form. No email, OTP, account ID, role or version is required or trusted in this body; unknown fields are ignored. Send Content-Type:application/json and the current person's Bearer accessToken, optionally X-Language:en|ar. Browser Origin/CORS requirements remain in force. No query/path parameters other than store are accepted.
+
+200 PASSWORD_CHANGED returns the usual success, code, localized message and requestId with required data:null. It returns no JWT, user DTO, refresh token or replacement session. The server clears narmer_refresh_{store} using HttpOnly, SameSite=Lax, Secure in production and Path=/api/v1/{store}/auth. Clear the old access/account/private state, clear both password inputs, then show the same store's login screen and use the new password. Browser JavaScript must not read the HttpOnly cookie.
+
+The server checks the current account/session and current password hash, then performs an atomic password-hash update guarded by authVersion. Success increments that version, making all previous access tokens, refresh sessions and email challenges unusable; no multi-document transaction is needed. Wrong current password returns400 INVALID_CURRENT_PASSWORD without changing sessions or credentials. A competing password/account-version change can return409 ACCOUNT_CONFLICT, or401 UNAUTHORIZED if invalidation is observed earlier. After an ambiguous timeout, try a fresh login with the new password rather than replaying the old token. No forced first-login change or password-history/reuse restriction is added.
+
+Validation returns422 VALIDATION_ERROR with body field paths currentPassword/newPassword and INVALID_FIELD or PASSWORD_TOO_LONG detail codes. Missing, blocked, expired, revoked or wrong-store authentication returns401 UNAUTHORIZED. Existing unconfirmed public accounts remain subject to403 EMAIL_NOT_VERIFIED. Generic failures return500 INTERNAL_ERROR; responses never include passwords, hashes or internal versions.
+
+The route shares the existing Auth-attempt IP budget30/15minutes and the global API-IP240/minute and authenticated store/account120/minute allowances. It additionally enforces10password-change attempts per15minutes for the authenticated store/account, shared across IPs, sessions and tokens. Authenticated validation failures consume this budget. On429 TOO_MANY_REQUESTS wait Retry-After; counters remain process-local. Existing forgot-password/reset-password recovery is unchanged and still requires email OTP.
+
+The [self-contained FE response](../../../../docs/frontend/account-creation-password-change.md) documents every creation/login/change-password request and response field, sources, retention, errors and exact changed-file locations.

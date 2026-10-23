@@ -35,7 +35,7 @@ const auditSchema = new mongoose.Schema({
   store: { type: String, enum: ['b2c', 'b2b'], required: true },
   actorId: { type: mongoose.Schema.Types.ObjectId, default: null },
   targetId: { type: mongoose.Schema.Types.ObjectId, required: true },
-  action: { type: String, enum: ['account.updated', 'account.deleted', 'superAdmin.provisioned', 'superAdmin.handover'], required: true },
+  action: { type: String, enum: ['account.created', 'account.updated', 'account.deleted', 'superAdmin.provisioned', 'superAdmin.handover'], required: true },
   fields: { type: [String], default: [] },
   before: auditState,
   after: auditState,

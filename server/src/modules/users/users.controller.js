@@ -25,6 +25,9 @@ export function createUsersController(users, staff) {
       await users.removeAddress(req.context.store, req.auth.userId, req.validated.params.addressId);
       sendSuccess(res);
     },
+    async createAccount(req, res) {
+      sendSuccess(res, { status: 201, data: await staff.create(req.context.store, req.auth, req.validated.body) });
+    },
     async listAccounts(req, res) {
       sendSuccess(res, { data: await staff.list(req.context.store, req.auth, req.validated.query) });
     },

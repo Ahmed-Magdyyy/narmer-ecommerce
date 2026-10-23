@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { createUsersController } from './users.controller.js';
 import { updateProfileValidator, addAddressValidator, updateAddressValidator, addressIdValidator,
-  accountIdValidator, accountListValidator, updateAccountValidator } from './users.validator.js';
+  accountIdValidator, accountListValidator, updateAccountValidator, createAccountValidator } from './users.validator.js';
 import { requireRoles } from '../auth/auth.middleware.js';
 
 export function createUsersRouter(users, authenticate) {
@@ -25,6 +25,7 @@ export function createStaffUsersRouter(users, staff, authenticate) {
   router.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   const controller = createUsersController(users, staff);
   router.use(authenticate, requireRoles('superAdmin', 'admin'));
+  router.post('/', requireRoles('superAdmin'), createAccountValidator, controller.createAccount);
   router.get('/', accountListValidator, controller.listAccounts);
   router.get('/:userId', accountIdValidator, controller.getAccount);
   router.patch('/:userId', updateAccountValidator, controller.updateAccount);

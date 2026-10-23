@@ -171,6 +171,18 @@ export function createAuthService(config, { users, email, repository = authRepos
       const user = await users.findAccountByEmail(store, emailAddress);
       if (user && user.status === 'active' && user.emailVerifiedAt) await sendChallenge(user, 'reset-password', locale);
     },
+    async changePassword(store, identity, currentPassword, newPassword) {
+      const account = await users.findAccountById(store, identity.userId);
+      await ensureActive(account);
+      const user = await users.findAccountByEmail(store, account.email);
+      await ensureActive(user);
+      const session = await repository.findSession(store, identity.sessionId, user._id, now());
+      if (!session || session.authVersion !== user.authVersion) throw unauthorized();
+      if (!await comparePassword(currentPassword, user.passwordHash)) throw new AppError(400, 'INVALID_CURRENT_PASSWORD');
+      if (!await users.changePassword(store, user._id, user.authVersion, await hashPassword(newPassword))) {
+        throw new AppError(409, 'ACCOUNT_CONFLICT');
+      }
+    },
     async resetPassword(store, emailAddress, code, password) {
       const user = await users.findAccountByEmail(store, emailAddress);
       if (!user?.emailVerifiedAt) throw new AppError(400, 'INVALID_OTP');

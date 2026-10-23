@@ -2,7 +2,7 @@
 
 B2B Leads integration (2026-10-12): an authenticated B2B customer may submit a Lead and read only submissions explicitly owned by their account. Guest submissions remain guest-owned even when email/phone matches an account or the visitor later signs in. Profiles and addresses may prefill editable contact in the frontend; Leads snapshots the submitted name/phone/optional email/governorate/district, and does not look up an addressId or current profile later. B2B staff uses its own Leads dashboard permissions. See the [Leads contract](../leads/LEADS_FRONTEND.md) for exact ownership, credential and contact fields.
 
-Source checked: 2026-10-13
+Source checked: 2026-10-24
 
 This document describes the implemented account profile, saved-address, and dashboard account-management APIs for B2C and B2B. Shared response/error conventions and broader journeys are linked at [API conventions](../../../../docs/frontend/api-conventions.md), [B2C flow](../../../../docs/frontend/b2c-flow.md), and [B2B flow](../../../../docs/frontend/b2b-flow.md). Those documents are maintained separately; this handoff includes the exact Users schemas and behavior.
 
@@ -12,9 +12,9 @@ Related module handoffs: [Auth](../auth/AUTH_FRONTEND.md).
 
 The API prefix is `/api/v1`. Customer self-service endpoints exist under `/api/v1/b2c/users` and `/api/v1/b2b/users`. Dashboard staff endpoints are separate at `/api/v1/admin/b2c/users` and `/api/v1/admin/b2b/users`. Each store's account and address data is isolated. A token for one store returns 401 when used under the other store.
 
-Every endpoint requires `Authorization: Bearer <accessToken>`. Access tokens expire after 15 minutes; see [Auth handoff](../auth/AUTH_FRONTEND.md) for login, refresh-cookie, logout, Origin, locale, and rate-limit behavior. Staff routes accept only current `superAdmin` or `admin` roles for listing, reading, and updating accounts; deletion is super-admin-only. Customer address routes accept only the `user` role. Moderators cannot access staff account routes. Authentication failures return 401 `UNAUTHORIZED`; authenticated role failures return 403 `FORBIDDEN`.
+Every endpoint requires `Authorization: Bearer <accessToken>`. Access tokens expire after 15 minutes; see [Auth handoff](../auth/AUTH_FRONTEND.md) for login, refresh-cookie, logout, Origin, locale, and rate-limit behavior. Staff listing, reading, and updating accepts current `superAdmin` or `admin` roles. Account creation and soft deletion require the current store super-admin. Customer address routes accept only the `user` role. Moderators cannot access staff account routes. Authentication failures return 401 `UNAUTHORIZED`; authenticated role failures return 403 `FORBIDDEN`.
 
-Success envelopes are `{ "success": true, "code": "OK", "message": "...", "data": ..., "requestId": "..." }` (address creation uses 201; otherwise 200). Delete success has `data: null`. Errors use `{ "success": false, "code": "...", "message": "...", "errors": [...], "requestId": "..." }`. Validation errors are 422 `VALIDATION_ERROR`; error `errors` entries contain `field`, `location`, `code`, and localized `message`. The shared [API conventions](../../../../docs/frontend/api-conventions.md) file defines these envelopes for all modules.
+Success envelopes are `{ "success": true, "code": "OK", "message": "...", "data": ..., "requestId": "..." }` (address and account creation use 201; otherwise 200). Delete success has `data: null`. Errors use `{ "success": false, "code": "...", "message": "...", "errors": [...], "requestId": "..." }`. Validation errors are 422 `VALIDATION_ERROR`; error `errors` entries contain `field`, `location`, `code`, and localized `message`. The shared [API conventions](../../../../docs/frontend/api-conventions.md) file defines these envelopes for all modules.
 
 Only recognized fields are consumed. Unknown fields are ignored, including attempted `email`, `store`, `role` in self-profile edits and password/internal fields in staff edits. IDs are Mongo ObjectId hex strings in paths and output; malformed IDs are 422 `VALIDATION_ERROR` with an `INVALID_FIELD` detail.
 
@@ -40,6 +40,7 @@ All paths below use `/api/v1/admin/{store}/users`.
 
 | Method and path | Allowed role | Success | Other implemented statuses |
 |---|---|---|---|
+| POST `/api/v1/admin/{store}/users` | `superAdmin` only | 201 `OK`, staff account | 401 `UNAUTHORIZED`; 403 `FORBIDDEN` or `EMAIL_NOT_VERIFIED`; 409 `ACCOUNT_EMAIL_EXISTS`; 422 `VALIDATION_ERROR`; 429 `TOO_MANY_REQUESTS`; 503 `TRANSACTIONS_REQUIRED`; 500 `INTERNAL_ERROR` |
 | GET `/api/v1/admin/{store}/users` | `superAdmin`, `admin` | 200 account page | 401 `UNAUTHORIZED`; 403 `FORBIDDEN` or `EMAIL_NOT_VERIFIED`; 422 `VALIDATION_ERROR`; 500 `INTERNAL_ERROR` |
 | GET `/api/v1/admin/{store}/users/{userId}` | `superAdmin`, `admin` | 200 account | 401 `UNAUTHORIZED`; 403 `FORBIDDEN` or `EMAIL_NOT_VERIFIED`; 404 `ACCOUNT_NOT_FOUND`; 422 `VALIDATION_ERROR`; 500 `INTERNAL_ERROR` |
 | PATCH `/api/v1/admin/{store}/users/{userId}` | `superAdmin`, `admin` | 200 updated account | 401 `UNAUTHORIZED`; 403 `FORBIDDEN` or `EMAIL_NOT_VERIFIED`; 404 `ACCOUNT_NOT_FOUND`; 409 `SUPER_ADMIN_PROTECTED` or `ACCOUNT_CONFLICT`; 422 `VALIDATION_ERROR`; 500 `INTERNAL_ERROR`; transaction configuration may return 503 `TRANSACTIONS_REQUIRED` |
@@ -47,7 +48,7 @@ All paths below use `/api/v1/admin/{store}/users`.
 
 The store is selected by URL. The API does not let staff list or change accounts from another store.
 
-There is no staff account-create (`POST /admin/{store}/users`) operation in this module. Accounts enter through the Auth registration flow and receive the `user` role; staff role assignment is an update to an existing eligible account.
+The current store super-admin can create an active account with an explicit admin, moderator, or user role. The super-admin supplies and manually hands over the initial password. The account can log in immediately without email/OTP. Public registration remains customer-only and requires OTP; staff may also update existing account roles. See the complete creation contract below.
 
 ## Request schemas and validation
 
@@ -129,7 +130,7 @@ Content-Type: application/json
 {"name":"Store Staff","role":"moderator","status":"active"}
 ```
 
-GET requests take no body; for example, `/api/v1/admin/b2c/users?page=2&limit=20&role=admin&status=active` applies the documented filters. DELETE requests take no body. There is no account-creation request body because no account POST endpoint is implemented.
+GET requests take no body; for example, `/api/v1/admin/b2c/users?page=2&limit=20&role=admin&status=active` applies the documented filters. DELETE requests take no body. Account creation has the separate required schema described below.
 
 ### Account update
 
@@ -359,3 +360,19 @@ Every endpoint in this contract participates in the API-wide effective-IP allowa
 Any endpoint can therefore return the shared 429 TOO_MANY_REQUESTS error, with no data and the normal success:false/code/message/errors/requestId fields. CORS exposes Retry-After (seconds), RateLimit and RateLimit-Policy to allowed browser origins. Preserve current form, IDs, versions, uploaded-file references and private credentials; pause polling/rapid requests and respect Retry-After. A 429 does not trigger token refresh. Resume using the module's documented safe read/replay rules, rather than assuming all mutations are idempotent. No request or response DTO field was added for limiting, and no limit header is a reusable credential.
 
 These counters are local to the confirmed single Node.js process and reset on restart. Shared counters are required before adding workers/servers. This is application abuse protection; external network/HTTP DDoS filtering and verified proxy configuration remain deployment work. Read the [security report](../../../../docs/security.md) for actual proof and remaining acceptance limits.
+
+## Super-admin account creation — 2026-10-24
+
+Read the [self-contained FE response](../../../../docs/frontend/account-creation-password-change.md) for the complete cross-module creation, manual handoff, login, own-password-change, retry and field-retention flow.
+
+POST /api/v1/admin/{store}/users requires the acting current assigned superAdmin's Bearer token. All five body properties are required non-null strings: name (trimmed 1–100 characters), email (trimmed/lowercase valid address, at most254 characters), phone (normalization removes spaces/parentheses/hyphens, then optional leading+ and6–15digits), password (8–72characters and at most72UTF-8bytes, never trimmed), and role (exactly admin, moderator, or user). The route chooses store. Unknown keys are ignored; status, emailVerifiedAt, authVersion, passwordHash, IDs and superAdmin role cannot be supplied as trusted data. No path ID, query or idempotency key is accepted.
+
+201 OK returns the existing staff-account DTO: id, store, name, email, phone, role, emailVerified, status, createdAt, deletedAt. Every property is required. id is the new MongoDB identifier; retain it for subsequent dashboard detail/PATCH/DELETE. store is the URL scope, normalized strings replace form baselines, status is active, createdAt is the persistence ISO date-time and deletedAt is null. emailVerified is true because this privileged flow approves login eligibility without an OTP; it is not proof of mailbox ownership. There is no password/hash/token/OTP or email-sent flag in the response, and creation does not set/replace a session cookie. Standard success envelope fields are unchanged.
+
+The backend hashes the password with the existing bcrypt policy and atomically inserts the account plus account.created audit in one MongoDB transaction. Audit state records actor, target, selected role/status and non-secret field names. No raw password or hash enters the audit. Any audit failure rolls back creation. SMTP is not consulted.
+
+The normalized email is reserved by all accounts in this store, including blocked and deleted records. A duplicate, including a concurrent loser or exact repeated request, returns409 ACCOUNT_EMAIL_EXISTS and never overwrites or reactivates the account. The other store may independently use the same email. There is no automatic successful replay. After an uncertain network result, reconcile the staff list before another submission; there is no email-search query. Missing transaction support returns503 TRANSACTIONS_REQUIRED.
+
+UI flow: show Create only to superAdmin, collect and validate the five inputs, disable duplicate submit, POST, retain returned id/store and display the account, then complete manual password handoff and clear secret form state. The person logs in immediately at /api/v1/{store}/auth/login, then may use POST /api/v1/{store}/auth/change-password with currentPassword/newPassword. This is available to normal B2C customers as well as staff/B2B accounts; it invalidates all previous access/refresh sessions and requires another login. No forced-change flag, invitation, or automatic email is implemented.
+
+Creation uses the existing API-IP240/minute and authenticated store/account120/minute limits. Honor Retry-After on429, preserve non-secret form input, and do not retry a duplicate email as though it were a transient failure. The FE response explains every response field, error field, source and later use.

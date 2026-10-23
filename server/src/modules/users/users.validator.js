@@ -1,4 +1,5 @@
 import { body, param, query } from 'express-validator';
+import bcrypt from 'bcryptjs';
 import { validateRequest } from '../../shared/middleware/validate-request.js';
 import { normalizePhone, validPhone } from '../../shared/utils/phone.js';
 
@@ -6,6 +7,19 @@ export const nameField = () => body('name').isString().withMessage('INVALID_FIEL
   .trim().isLength({ min: 1, max: 100 }).withMessage('INVALID_FIELD');
 export const phoneField = () => body('phone').isString().withMessage('INVALID_FIELD').bail()
   .trim().customSanitizer(normalizePhone).custom(validPhone).withMessage('INVALID_FIELD');
+export const emailField = () => body('email').isString().withMessage('INVALID_FIELD').bail()
+  .trim().isLength({ max: 254 }).withMessage('INVALID_FIELD').bail()
+  .isEmail().withMessage('INVALID_FIELD').toLowerCase();
+export const passwordField = (key = 'password') => body(key).isString().withMessage('INVALID_FIELD').bail()
+  .isLength({ min: 8, max: 72 }).withMessage('INVALID_FIELD').bail()
+  .custom(value => !bcrypt.truncates(value)).withMessage('PASSWORD_TOO_LONG');
+
+export const createAccountValidator = [
+  nameField(), emailField(), phoneField(), passwordField(),
+  body('role').isString().withMessage('INVALID_FIELD').bail()
+    .isIn(['admin', 'moderator', 'user']).withMessage('INVALID_FIELD'),
+  validateRequest,
+];
 
 export const updateProfileValidator = [
   nameField().optional(), phoneField().optional(),

@@ -4,7 +4,7 @@ export const usersRepository = {
   initialize: () => Promise.all([User.init(), UserAudit.init()]),
   findByEmail: (store, email, session = null) => User.findOne({ store, email }).session(session).select('+passwordHash +authVersion').lean(),
   findById: (store, id, session = null) => User.findOne({ store, _id: id }).session(session).select('+authVersion').lean(),
-  create: async data => (await User.create(data)).toObject(),
+  create: async (data, session = null) => (await User.create([data], { session }))[0].toObject(),
   confirmEmail: (store, id, now) => User.findOneAndUpdate(
     { store, _id: id, status: 'active', emailVerifiedAt: null },
     { $set: { emailVerifiedAt: now } }, { returnDocument: 'after', runValidators: true },

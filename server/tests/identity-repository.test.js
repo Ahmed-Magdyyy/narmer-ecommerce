@@ -9,6 +9,16 @@ const id = 'a'.repeat(24);
 const digest = 'b'.repeat(64);
 const now = new Date();
 
+test('account creation passes the caller transaction session to Mongoose', async t => {
+  const session = { testSession: true }, data = { store: 'b2c', email: 'new@example.com' };
+  t.mock.method(User, 'create', async (documents, options) => {
+    assert.deepEqual(documents, [data]);
+    assert.equal(options.session, session);
+    return [{ toObject: () => ({ _id: id, ...data }) }];
+  });
+  assert.deepEqual(await usersRepository.create(data, session), { _id: id, ...data });
+});
+
 test('identity schemas require store-scoped uniqueness and safe defaults', async () => {
   assert.ok(User.schema.indexes().some(([keys, options]) => keys.store === 1 && keys.email === 1 && options.unique));
   assert.ok(AuthChallenge.schema.indexes().some(([keys, options]) => keys.store === 1 && keys.userId === 1 && keys.purpose === 1 && options.unique));

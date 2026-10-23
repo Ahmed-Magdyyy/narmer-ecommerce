@@ -21,6 +21,78 @@ async function staffFixture() {
 }
 const address = { label: 'بيت', governorate: 'Cairo', building: '12A', street: 'Main street', floor: 'Ground' };
 
+test('only the assigned superAdmin creates active role-selected accounts without email or privileged input overrides', async () => {
+  const f = await staffFixture();
+  const emailCount = f.emails.length;
+  f.failEmail(true);
+  for (const role of ['admin', 'moderator', 'user']) {
+    const input = { name: 'New Account', email: `${role}@example.com`, phone: '+201001234567', password: 'InitialPass123!', role,
+      store: 'b2b', status: 'blocked', emailVerifiedAt: null, authVersion: 99 };
+    const created = await f.staff.create('b2c', f.identity, input);
+    assert.equal(created.store, 'b2c');
+    assert.equal(created.role, role);
+    assert.equal(created.status, 'active');
+    assert.equal(created.emailVerified, true);
+    assert.equal(Object.hasOwn(created, 'passwordHash'), false);
+    const stored = f.accounts.get(created.id);
+    assert.equal(stored.authVersion, 0);
+    assert.notEqual(stored.passwordHash, input.password);
+    const login = await f.auth.login('b2c', input.email, input.password);
+    const identity = await f.auth.authenticate('b2c', login.accessToken);
+    await assert.rejects(f.staff.create('b2c', identity, { ...input, email: 'denied@example.com' }), { code: 'FORBIDDEN' });
+    await assert.rejects(f.staff.create('b2b', identity, input), { code: 'UNAUTHORIZED' });
+  }
+  assert.equal(f.emails.length, emailCount);
+  assert.equal(f.audits.filter(audit => audit.action === 'account.created').length, 3);
+  assert.ok(!JSON.stringify(f.audits).includes('InitialPass123!'));
+  assert.ok(!JSON.stringify(f.audits).includes('passwordHash'));
+  await assert.rejects(f.staff.create('b2c', f.identity, { role: 'superAdmin' }), { code: 'FORBIDDEN' });
+});
+
+test('account creation reserves normalized email, has one concurrent winner, and rolls back on audit failure', async () => {
+  const f = await staffFixture();
+  const input = { name: 'New Account', email: ' NEW@EXAMPLE.COM ', phone: '+201001234567', password: 'InitialPass123!', role: 'user' };
+  f.failAudit(true);
+  await assert.rejects(f.staff.create('b2c', f.identity, input), /audit failed/);
+  assert.equal(await f.users.findAccountByEmail('b2c', input.email), null);
+  f.failAudit(false);
+  const results = await Promise.allSettled([f.staff.create('b2c', f.identity, input), f.staff.create('b2c', f.identity, input)]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.find(result => result.status === 'rejected').reason.code, 'ACCOUNT_EMAIL_EXISTS');
+  const created = results.find(result => result.status === 'fulfilled').value;
+  assert.equal(created.email, 'new@example.com');
+  f.accounts.get(created.id).status = 'blocked';
+  await assert.rejects(f.staff.create('b2c', f.identity, input), { code: 'ACCOUNT_EMAIL_EXISTS' });
+  f.accounts.get(created.id).status = 'deleted';
+  await assert.rejects(f.staff.create('b2c', f.identity, input), { code: 'ACCOUNT_EMAIL_EXISTS' });
+  assert.equal(f.audits.filter(audit => audit.action === 'account.created').length, 1);
+});
+
+test('a signed-in customer can change a manually supplied password; current password, session and version are enforced', async () => {
+  const f = await staffFixture();
+  const input = { name: 'New Customer', email: 'new@example.com', phone: '+201001234567', password: 'InitialPass123!', role: 'user' };
+  await f.staff.create('b2c', f.identity, input);
+  const first = await f.auth.login('b2c', input.email, input.password);
+  const second = await f.auth.login('b2c', input.email, input.password);
+  const identity = await f.auth.authenticate('b2c', first.accessToken);
+  await assert.rejects(f.auth.changePassword('b2c', identity, 'WrongPass123!', 'ChangedPass123!'), { code: 'INVALID_CURRENT_PASSWORD' });
+  await f.auth.authenticate('b2c', first.accessToken);
+  const results = await Promise.allSettled([
+    f.auth.changePassword('b2c', identity, input.password, 'ChangedPass123!'),
+    f.auth.changePassword('b2c', identity, input.password, 'OtherPass123!'),
+  ]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.find(result => result.status === 'rejected').reason.code, 'ACCOUNT_CONFLICT');
+  for (const login of [first, second]) {
+    await assert.rejects(f.auth.authenticate('b2c', login.accessToken), { code: 'UNAUTHORIZED' });
+    await assert.rejects(f.auth.refresh('b2c', login.refreshToken), { code: 'UNAUTHORIZED' });
+  }
+  await assert.rejects(f.auth.changePassword('b2c', identity, input.password, 'LaterPass123!'), { code: 'UNAUTHORIZED' });
+  await assert.rejects(f.auth.login('b2c', input.email, input.password), { code: 'INVALID_CREDENTIALS' });
+  const winner = results[0].status === 'fulfilled' ? 'ChangedPass123!' : 'OtherPass123!';
+  assert.equal((await f.auth.login('b2c', input.email, winner)).user.role, 'user');
+});
+
 test('addresses belong to their customer/store, preserve concurrent edits, and use the current main phone', async () => {
   const f = identityFixture();
   const a = await account(f, 'a@example.com');

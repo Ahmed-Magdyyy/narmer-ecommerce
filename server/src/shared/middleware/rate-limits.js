@@ -18,6 +18,7 @@ export const createApiIpLimiter = () => rateLimit({ ...options, windowMs: 60000,
 export function createAuthenticatedLimits() {
   const general = accountLimit(60000, 120, 'account');
   const reports = accountLimit(60000, 30, 'reports-account');
+  const password = accountLimit(900000, 10, 'password-account');
   const cart = accountLimit(900000, 150, 'cart-account');
   const wishlist = accountLimit(900000, 150, 'wishlist-account');
   const media = accountLimit(900000, 60, 'media-account');
@@ -26,6 +27,7 @@ export function createAuthenticatedLimits() {
   return async (req, res) => {
     await apply(general, req, res);
     const path = req.originalUrl.split('?')[0];
+    if (/^\/api\/v1\/b2[bc]\/auth\/change-password\/?$/i.test(path)) await apply(password, req, res);
     if (/^\/api\/v1\/admin\/b2c\/reports(?:\/|$)/i.test(path)) await apply(reports, req, res);
     if (/^\/api\/v1\/b2c\/cart(?:\/|$)/i.test(path)) await apply(cart, req, res);
     if (/^\/api\/v1\/b2c\/wishlist(?:\/|$)/i.test(path)) await apply(wishlist, req, res);

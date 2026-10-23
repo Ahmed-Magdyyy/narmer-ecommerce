@@ -4,7 +4,7 @@ import { AppError } from '../../shared/errors/app-error.js';
 import { createLoginIdentityLimiter } from '../../shared/middleware/rate-limits.js';
 import { cookieRefresh, requireRoles } from './auth.middleware.js';
 import { createAuthController } from './auth.controller.js';
-import { registerValidator, emailValidator, verifyEmailValidator, loginValidator, resetPasswordValidator, handoverValidator } from './auth.validator.js';
+import { registerValidator, emailValidator, verifyEmailValidator, loginValidator, resetPasswordValidator, changePasswordValidator, handoverValidator } from './auth.validator.js';
 
 export function createAuthRouter(auth, authenticate, config) {
   const router = Router();
@@ -23,6 +23,7 @@ export function createAuthRouter(auth, authenticate, config) {
   router.post('/logout', attempts, authenticate, controller.logout);
   router.post('/forgot-password', sending, emailValidator, controller.forgotPassword);
   router.post('/reset-password', attempts, resetPasswordValidator, controller.resetPassword);
+  router.post('/change-password', attempts, authenticate, changePasswordValidator, controller.changePassword);
   return router;
 }
 
