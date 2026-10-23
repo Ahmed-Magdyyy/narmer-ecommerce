@@ -1,0 +1,41 @@
+# Dependencies and generated output
+node_modules/
+/scripts/
+dist/
+build/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Local environment and deployment settings
+.env
+.env.*
+!.env.example
+.vercel/
+.npmrc
+
+# Credentials and private keys
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+serviceAccount*.json
+
+# Logs, temporary files, and local editor settings
+logs/
+*.log
+*.pid
+*.pid.lock
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*~
+.scratch/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
