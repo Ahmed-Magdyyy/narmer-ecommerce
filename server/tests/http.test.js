@@ -5,7 +5,8 @@ import { Router } from 'express';
 import { body, query } from 'express-validator';
 import { createApp } from '../src/app/app.js';
 import { createApiRouter } from '../src/app/routes.js';
-import { testConfig as config } from './helpers/config.js';
+import { readEnv } from '../src/config/env.js';
+import { testConfig as config, testEnv } from './helpers/config.js';
 import { validateRequest } from '../src/shared/middleware/validate-request.js';
 import { sendSuccess } from '../src/shared/utils/response.js';
 
@@ -88,6 +89,36 @@ test('security headers, CORS allowlist, and server-generated request IDs', async
     'Access-Control-Request-Headers': 'content-type,x-language',
   } });
   assert.equal(preflight.status, 204);
+});
+
+test('integration origins allow credentialed preflight and reads while other loopback origins are denied', async t => {
+  const f = await fixture(t, readEnv({ ...testEnv, NODE_ENV: 'production' }));
+  for (const port of [5294, 5295, 5284, 5283]) {
+    const origin = `http://127.0.0.1:${port}`;
+    for (const store of ['b2b', 'b2c']) {
+      const preflight = await fetch(`${f.url}/api/v1/${store}/auth/login`, { method: 'OPTIONS', headers: {
+        Origin: origin, 'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization,content-type,x-language',
+      } });
+      assert.equal(preflight.status, 204);
+      assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+      assert.equal(preflight.headers.get('access-control-allow-credentials'), 'true');
+      assert.match(preflight.headers.get('access-control-allow-methods'), /POST/);
+      assert.equal(preflight.headers.get('access-control-allow-headers'), 'authorization,content-type,x-language');
+    }
+    const response = await fetch(`${f.url}/health/live`, { headers: { Origin: origin } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('access-control-allow-origin'), origin);
+    for (const header of ['X-Request-Id', 'Retry-After', 'RateLimit', 'RateLimit-Policy']) {
+      assert.ok(response.headers.get('access-control-expose-headers').split(',').includes(header));
+    }
+  }
+  for (const origin of ['http://127.0.0.1:5285', 'http://localhost:5284', 'https://127.0.0.1:5284']) {
+    const response = await fetch(`${f.url}/health/live`, { headers: { Origin: origin } });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).code, 'CORS_DENIED');
+    assert.equal(response.headers.get('access-control-allow-origin'), null);
+  }
 });
 
 test('malformed and oversized JSON use safe centralized errors', async t => {

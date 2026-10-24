@@ -49,6 +49,12 @@ export function readEnv(source = process.env) {
       throw new Error('CORS_ORIGINS must contain exact HTTP(S) origins separated by commas.');
     }
   }
+  corsOrigins.push(...[
+    'http://127.0.0.1:5294',
+    'http://127.0.0.1:5295',
+    'http://127.0.0.1:5284',
+    'http://127.0.0.1:5283',
+  ].filter(origin => !corsOrigins.includes(origin)));
   const host = source.HOST ?? '127.0.0.1';
   if (!host.trim()) throw new Error('HOST must not be empty.');
   const jwtSecret = secret(source.JWT_SECRET, 'JWT_SECRET');

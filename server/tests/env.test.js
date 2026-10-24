@@ -4,6 +4,7 @@ import { readEnv } from '../src/config/env.js';
 import { testEnv } from './helpers/config.js';
 
 const base = { ...testEnv, NODE_ENV: undefined, CORS_ORIGINS: undefined };
+const integrationOrigins = [5294, 5295, 5284, 5283].map(port => `http://127.0.0.1:${port}`);
 
 test('proof storage is optional, separately configured and never accepts the public catalog zone', () => {
   assert.equal(readEnv(base).bunnyProof, null);
@@ -24,7 +25,7 @@ test('environment defaults are local and do not trust proxy headers', () => {
   assert.equal(config.host, '127.0.0.1');
   assert.equal(config.trustProxy, 0);
   assert.equal(config.defaultLocale, 'en');
-  assert.deepEqual(config.corsOrigins, []);
+  assert.deepEqual(config.corsOrigins, integrationOrigins);
 });
 
 test('explicit environment settings are parsed without reading ambient database settings', () => {
@@ -33,8 +34,13 @@ test('explicit environment settings are parsed without reading ambient database 
   assert.equal(config.port, 4000);
   assert.equal(config.defaultLocale, 'ar');
   assert.equal(config.trustProxy, 1);
-  assert.deepEqual(config.corsOrigins, ['https://shop.example', 'http://localhost:5173']);
+  assert.deepEqual(config.corsOrigins, ['https://shop.example', 'http://localhost:5173', ...integrationOrigins]);
   assert.throws(() => readEnv({ DATABASE_URL: base.MONGODB_URI }), /MONGODB_URI/);
+});
+
+test('integration origins stay available in production without duplicating configured origins', () => {
+  const config = readEnv({ ...base, NODE_ENV: 'production', CORS_ORIGINS: integrationOrigins[0] });
+  assert.deepEqual(config.corsOrigins, integrationOrigins);
 });
 
 test('invalid configuration fails without including credentials in the error', () => {
