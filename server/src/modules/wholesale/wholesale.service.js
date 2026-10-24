@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { AppError } from '../../shared/errors/app-error.js';
 import { runTransaction } from '../../shared/utils/transaction.js';
 import { wholesaleRepository } from './wholesale.repository.js';
+import { isOfferSlug, legacyOfferIdPattern, offerSlugBase, offerSlugCandidate } from './wholesale.slug.js';
 
 const invalid = () => { throw new AppError(422, 'INVALID_WHOLESALE'); };
 const id = value => { if (typeof value !== 'string' || !/^[a-f0-9]{24}$/i.test(value)) invalid(); return value.toLowerCase(); };
@@ -45,17 +46,38 @@ export function createWholesaleService({ auth, products, media, repository = who
     const b2b = (await repository.findProducts('b2b', sourceIds('b2b'), session)).map(row => nativeProjection(row, locale));
     return new Map([...b2c.map(row => [`b2c:${row.id}`, row]), ...b2b.map(row => [`b2b:${row.id}`, row])]);
   }
-  async function offerViews(rows, locale, session = null) {
+  async function offerViews(rows, locale, session = null, includeUrls = true) {
     const catalog = await sources(rows, locale, session);
     return rows.map(row => {
       const composition = row.composition.map(line => ({ variantId: line.variantId ? String(line.variantId) : null, quantity: line.quantity }));
       const product = catalog.get(`${row.sourceStore}:${row.productId}`) ?? null;
-      return { id: String(row._id), name: local(row.name, locale), description: local(row.description, locale),
+      const isAvailable = Boolean(row.isActive && compositionValid(product, composition));
+      if (includeUrls && (!locale || isAvailable) && (!isOfferSlug(row.slug) || !Array.isArray(row.slugAliases))) throw new AppError(503, 'NOT_READY');
+      return { id: String(row._id), ...(includeUrls ? { slug: row.slug, slugAliases: [...(row.slugAliases ?? [])] } : {}),
+        name: local(row.name, locale), description: local(row.description, locale),
         sourceStore: row.sourceStore, productId: String(row.productId), composition,
         piecesPerPouch: composition.reduce((sum, line) => sum + line.quantity, 0),
-        isActive: row.isActive, isAvailable: Boolean(row.isActive && compositionValid(product, composition)), product,
+        isActive: row.isActive, isAvailable, product,
         version: row.version };
     });
+  }
+  async function offerUrlFields(store, resourceId, input, previous, name, session) {
+    if (Object.hasOwn(input, 'slugAliases') || (!previous && Object.hasOwn(input, 'slug'))) invalid();
+    if (previous) {
+      if (!isOfferSlug(previous.slug) || !Array.isArray(previous.slugAliases)) throw new AppError(503, 'NOT_READY');
+      if (!Object.hasOwn(input, 'slug')) return { slug: previous.slug, slugAliases: previous.slugAliases };
+      if (typeof input.slug !== 'string' || !isOfferSlug(input.slug.trim())) invalid();
+      const slug = input.slug.trim();
+      if (slug === previous.slug) return { slug, slugAliases: previous.slugAliases };
+      if (await repository.findOfferKey(store, slug, session)) throw new AppError(409, 'WHOLESALE_SLUG_EXISTS');
+      await repository.reserveOfferKey(store, slug, resourceId, session);
+      return { slug, slugAliases: [...previous.slugAliases, previous.slug] };
+    }
+    const base = offerSlugBase(name.en);
+    let number = 1, slug = base;
+    while (await repository.findOfferKey(store, slug, session)) slug = offerSlugCandidate(base, ++number);
+    await repository.reserveOfferKey(store, slug, resourceId, session);
+    return { slug, slugAliases: [] };
   }
   async function list(resource, store, identity, input, locale) {
     checkStore(store);
@@ -93,7 +115,7 @@ export function createWholesaleService({ auth, products, media, repository = who
       if (action === 'updated' && input.version !== previous.version) throw new AppError(409, 'WHOLESALE_CONFLICT');
       if (Object.keys(input).some(key => ['price', 'stock', 'discountedPrice', 'sku', 'options', 'variants', 'categoryId', 'type'].includes(key))) invalid();
       let changed;
-      const permitted = resource === 'product' ? ['name', 'description', 'isActive', 'imageIds'] : ['name', 'description', 'isActive', 'sourceStore', 'productId', 'composition'];
+      const permitted = resource === 'product' ? ['name', 'description', 'isActive', 'imageIds'] : ['name', 'description', 'isActive', 'sourceStore', 'productId', 'composition', 'slug'];
       const selectedFields = Object.keys(input).filter(key => permitted.includes(key));
       if (action === 'updated' && !selectedFields.length) invalid();
       if (action === 'deleted') {
@@ -131,6 +153,7 @@ export function createWholesaleService({ auth, products, media, repository = who
           if (!source && (action === 'created' || input.composition !== undefined || input.isActive === true)) throw new AppError(409, 'WHOLESALE_SOURCE_UNAVAILABLE');
           if (source && !compositionValid(source, composition)) invalid();
           Object.assign(fields, { composition, ...(previous ? {} : { sourceStore, productId }) });
+          Object.assign(fields, await offerUrlFields(store, resourceId, input, previous, fields.name, session));
         }
         changed = previous ? await repository.update(resource, store, resourceId, previous.version, fields, session)
           : await repository.create(resource, { _id: resourceId, store, ...fields, version: 0 }, session);
@@ -160,12 +183,22 @@ export function createWholesaleService({ auth, products, media, repository = who
         if (row.version !== request.version) throw new AppError(409, 'WHOLESALE_CONFLICT');
         rows.push(row);
       }
-      const offers = await offerViews(rows, undefined, session);
+      const offers = await offerViews(rows, undefined, session, false);
       if (offers.some(offer => !offer.isAvailable)) throw new AppError(409, 'WHOLESALE_SOURCE_UNAVAILABLE');
       return offers.map((offer, index) => ({ ...offer, quantity: requests[index].quantity }));
     },
     browse: (store, input, locale = 'en') => list('offer', store, null, input, locale),
     getPublic: (store, offerId, locale = 'en') => item('offer', store, null, offerId, locale),
+    async resolvePublic(store, key, locale = 'en') {
+      checkStore(store);
+      if (typeof key !== 'string' || key.length > 150) invalid();
+      key = key.toLowerCase();
+      if (legacyOfferIdPattern.test(key)) return item('offer', store, null, key, locale);
+      if (!isOfferSlug(key)) invalid();
+      const reserved = await repository.findOfferKey(store, key);
+      if (!reserved) throw new AppError(404, 'WHOLESALE_OFFER_NOT_FOUND');
+      return item('offer', store, null, String(reserved.offerId), locale);
+    },
     listProducts: (store, identity, input) => list('product', store, identity, input),
     getProduct: (store, identity, productId) => item('product', store, identity, productId),
     listOffers: (store, identity, input) => list('offer', store, identity, input),

@@ -9,7 +9,11 @@
   "scripts": {
     "dev": "node --watch --env-file-if-exists=.env src/app/server.js",
     "start": "node --env-file-if-exists=.env src/app/server.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "backfill:wholesale-slugs": "node --env-file-if-exists=.env scripts/backfill-wholesale-slugs.js",
+    "test:db:wholesale": "node --env-file-if-exists=.env scripts/test-development-db.js --wholesale-only",
+    "docs:frontend": "node scripts/build-frontend-docs.js",
+    "docs:frontend:check": "node scripts/build-frontend-docs.js --check"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

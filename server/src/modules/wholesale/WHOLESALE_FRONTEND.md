@@ -20,6 +20,7 @@ All dashboard endpoints require an active, confirmed B2B superAdmin/admin bearer
 | --- | --- | --- | --- |
 | `GET /api/v1/b2b/wholesale/offers` | Public | Offer list queries below | Localized available offers plus pagination; 200 |
 | `GET /api/v1/b2b/wholesale/offers/:resourceId` | Public | Offer ID path | One localized available offer; 200 |
+| `GET /api/v1/b2b/wholesale/offers/resolve/:offerKey` | Public | Saved slug, alias, or legacy ID | Complete canonical public offer DTO; 200 |
 | `GET /api/v1/admin/b2b/wholesale/b2c-products` | B2B superAdmin/admin | Selector queries | Bilingual read-only B2C projections plus pagination; 200 |
 | `GET /api/v1/admin/b2b/wholesale/b2c-products/:resourceId` | B2B superAdmin/admin | B2C Product ID path | One bilingual visible B2C projection; 200 |
 | `GET /api/v1/admin/b2b/wholesale/products` | B2B superAdmin/admin | Native product list queries | Bilingual native products plus pagination; 200 |
@@ -46,6 +47,7 @@ Native image upload additionally uses `POST /api/v1/admin/b2b/media/product/:tar
 | Origin | Browser-managed, subject to configured general CORS. No additional cookie-write Origin gate in Wholesale/Media. | Configure real frontend origin; do not manually set in browser JavaScript. |
 | Cookies | Wholesale/Media issue/consume no ownership cookie. | Refresh cookie belongs to separate Auth flow. |
 | resourceId | Required on detail/update/delete paths, exactly 24 hex characters; uppercase accepted and lowered. | Relevant returned native/offer/source id. The path resource kind determines which collection is searched. |
+| offerKey | Required only on `GET /api/v1/b2b/wholesale/offers/resolve/:offerKey`; one decoded path segment, at most 150 characters for slug lookup, uppercase slug text normalized to lowercase, or exactly 24 hexadecimal characters for legacy ID lookup. No request body. | Current public offer slug, an alias, or existing offer ID. URL decoding occurs once; encoded separators do not create another path segment. |
 | targetId | Media path: native B2B product ID, exactly 24 hex, normalized by service. | Create native product first, then upload to its ID. A B2C product ID does not identify a native target. |
 
 Responses use the shared success/error envelopes, X-Request-Id and Content-Language. No ETag, client idempotency key or special Wholesale cookie is used. Wholesale has no additional module-specific limiter; general API IP and verified-account limits apply as documented below. Media uploads additionally have both IP and store/account allowances of 60 per 15 minutes. General JSON bodies are bounded to 100 KB; images to 5 MB and 20 million decoded pixels.
@@ -129,6 +131,8 @@ Native management responses additionally have isActive (stored boolean) and vers
 | Field | Exact type/source | Meaning/retention |
 | --- | --- | --- |
 | id | Lowercase 24-hex offer ID | Detail/edit/delete path, and Leads selection identity. |
+| slug | Required lowercase ASCII slug, 1–150 characters; 24-hex values are reserved | Stable URL key for this offer, independent of names/source Product. Shared across languages. |
+| slugAliases | Required array of distinct prior slugs; initially [] | Former canonical keys retained permanently for this offer. Never includes current slug and never appears inside product. |
 | name | Bilingual dashboard object or localized public string, up to 200 characters | Offer display label authored by B2B staff. |
 | description | Bilingual dashboard object or localized public string, up to 10000 characters; may be empty | Offer explanation; public empty selected translation falls back. |
 | sourceStore | b2c or b2b, immutable saved source area | Retain with productId; never use as a credential switch. |
@@ -140,7 +144,7 @@ Native management responses additionally have isActive (stored boolean) and vers
 | product | Complete current price-free projection above, or null | Dashboard null when source missing/hidden. Do not render cached hidden source content as the latest result. Public inaccessible offer returns 404 rather than this null detail. |
 | version | Nonnegative safe integer, public and dashboard | Dashboard sends it on the next PATCH. Public clients retain it with selected offer IDs for Leads stale-composition validation. |
 
-There is no customer pouch quantity, selected customer variant, payable price, subtotal, stock, reservation, imageIds, updatedAt, status history or lead ID in the offer response. Keep the intended pouch quantity in frontend draft state and submit it through Leads wholesaleRequests. Changing a source's name/images updates future reads; offer name/description and composition remain their independently saved values.
+There is no customer pouch quantity, selected customer variant, payable price, subtotal, stock, reservation, imageIds, updatedAt, status history or lead ID in the offer response. Keep the intended pouch quantity in frontend draft state and submit it through Leads wholesaleRequests. Changing a source's name/images updates future reads; offer name/description, slug and composition remain their independently saved values.
 
 ### Where catalog values go next
 
@@ -194,7 +198,7 @@ GET /api/v1/b2b/wholesale/offers/:resourceId with X-Language:en returns this com
 {
   "success": true, "code": "OK", "message": "Request completed successfully.",
   "data": {
-    "id": "222222222222222222222222", "name": "30-shirt pouch", "description": "",
+    "id": "222222222222222222222222", "slug": "30-shirt-pouch", "slugAliases": [], "name": "30-shirt pouch", "description": "",
     "sourceStore": "b2b", "productId": "111111111111111111111111",
     "composition": [{ "variantId": null, "quantity": 30 }], "piecesPerPouch": 30,
     "isActive": true, "isAvailable": true, "version": 0,
@@ -314,3 +318,283 @@ Every endpoint in this contract participates in the API-wide effective-IP allowa
 Any endpoint can therefore return the shared 429 TOO_MANY_REQUESTS error, with no data and the normal success:false/code/message/errors/requestId fields. CORS exposes Retry-After (seconds), RateLimit and RateLimit-Policy to allowed browser origins. Preserve current form, IDs, versions, uploaded-file references and private credentials; pause polling/rapid requests and respect Retry-After. A 429 does not trigger token refresh. Resume using the module's documented safe read/replay rules, rather than assuming all mutations are idempotent. No request or response DTO field was added for limiting, and no limit header is a reusable credential.
 
 These counters are local to the confirmed single Node.js process and reset on restart. Shared counters are required before adding workers/servers. This is application abuse protection; external network/HTTP DDoS filtering and verified proxy configuration remain deployment work. Read the [security report](../../../../docs/security.md) for actual proof and remaining acceptance limits.
+
+## Stable offer URL extension (owner-approved; rollout verification pending)
+
+The approved stable-URL contract adds required response fields `slug` and `slugAliases` to public offer list/detail/resolver DTOs and dashboard offer list/detail/create/PATCH DTOs. They are fields on the offer, never on `product`. Existing ID routes remain ID-only. The new public `GET /api/v1/b2b/wholesale/offers/resolve/:offerKey` accepts a canonical slug, former slug alias, or legacy 24-hex offer ID and returns the complete current public DTO with HTTP 200. It performs the same visibility/availability checks and never writes or backfills during GET. Unknown or unavailable offers use the generic public not-found response; a legacy offer without a persisted slug returns `503 NOT_READY` during rollout rather than generating one during GET.
+
+`slug` is a saved lowercase 1–150-character key matching `^[a-z0-9]+(?:-[a-z0-9]+)*$`; 24-hex keys are reserved for ID lookup. `slugAliases` is a required distinct array, initially empty, containing every prior canonical key and never the current value. POST does not accept either field: the server creates the initial slug and rejects supplied `slug`/`slugAliases`. PATCH may receive an optional `slug` with the current offer `version`; ordinary name changes preserve the slug. Alias input is read-only and rejected. Repeating the current slug is accepted, creates no alias, and still increments version once under the existing accepted-write policy; version-only PATCH remains invalid. A slug change reserves the new key, retains the old key as an alias, updates the offer, and writes the existing audit atomically. An explicit conflict returns `409 WHOLESALE_SLUG_EXISTS`; stale versions keep existing `409 WHOLESALE_CONFLICT` behavior. Former keys never expire and cannot be reused, including after deletion through an internal reservation or by the same offer.
+
+Initial generation is based once on initial `name.en` with NFKD normalization, lowercase ASCII words separated by hyphens, and an initial base trimmed to at most 96 characters. Collision allocation uses numeric suffixes while keeping the final key at most 150 characters. Empty bases use `offer`; a 24-hex-looking base gets an `-offer` suffix. Offers share a store-wide key namespace across canonical keys and aliases. This does not add a slug to Leads' persisted offer snapshot: snapshots continue storing offer ID, version, and the existing offer/product/composition fields only. A slug PATCH can make an older pending Lead selection version stale.
+
+The companion [stable URL frontend handoff](../../../../docs/frontend/wholesale-stable-urls.md) describes relative website 308 behavior, static mapping/invalidation, and backfill operation. The CLI supports preview/apply only after the owner confirms no readable links were published/shared; it does not import a previous frontend mapping. Preview records the target database, offer/key registry fingerprint, sorted plan, proposed IDs/slugs/aliases and collision reservations. Apply requires the exact reviewed file and unchanged fingerprint, takes the catalog lock in a transaction, reserves keys, updates missing slug/alias fields only, then verifies readback. It preserves existing offer versions and timestamps. The authorized read-only preview of the configured `narmer` database found zero offers and zero registry keys, so it proposed no work; no apply was performed and the preview made no writes. The one real uniquely named disposable MongoDB check passed in 48.75 seconds, including collision races, audit/backfill rollback, idempotent preview, database identity/fingerprint gates, version preservation, and verified empty cleanup. Twenty-two focused checks passed. The full local suite passed 197 tests with zero failures and six opt-in MongoDB skips; the separate Wholesale MongoDB check above was executed explicitly. Live resolver traffic, website-host 308/static invalidation, deployment, and browser behavior remain unverified.
+
+### Stable URL requests and complete examples
+
+These examples describe the approved API contract with synthetic IDs and names. The resolver returns the same complete current DTO for a canonical slug, alias, or legacy ID; it does not return a redirect response.
+
+Create an offer without either URL field:
+
+```json
+{
+  "name": { "en": "Logo hoodie", "ar": "هودي بشعار" },
+  "description": { "en": "Fixed wholesale pouch.", "ar": "عبوة جملة بتكوين ثابت." },
+  "sourceStore": "b2b",
+  "productId": "111111111111111111111111",
+  "composition": [{ "variantId": null, "quantity": 30 }],
+  "isActive": true
+}
+```
+
+Proposed complete 201 create response, with server-allocated `logo-hoodie`:
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "Request completed successfully.",
+  "data": {
+    "id": "222222222222222222222222",
+    "slug": "logo-hoodie",
+    "slugAliases": [],
+    "name": { "en": "Logo hoodie", "ar": "هودي بشعار" },
+    "description": { "en": "Fixed wholesale pouch.", "ar": "عبوة جملة بتكوين ثابت." },
+    "sourceStore": "b2b",
+    "productId": "111111111111111111111111",
+    "composition": [{ "variantId": null, "quantity": 30 }],
+    "piecesPerPouch": 30,
+    "isActive": true,
+    "isAvailable": true,
+    "product": {
+      "id": "111111111111111111111111",
+      "type": "simple",
+      "name": { "en": "Logo hoodie", "ar": "هودي بشعار" },
+      "description": { "en": "", "ar": "" },
+      "images": [],
+      "options": [],
+      "variants": []
+    },
+    "version": 0
+  },
+  "requestId": "11111111-1111-4111-8111-111111111111"
+}
+```
+
+An ordinary display-name edit omits `slug` and preserves `logo-hoodie`:
+
+```json
+{ "version": 0, "name": { "en": "Classic Logo Hoodie", "ar": "هودي كلاسيكي بشعار" } }
+```
+
+Its proposed complete 200 response still has `slug: "logo-hoodie"`, `slugAliases: []`, the changed bilingual name, and `version: 1`; all other DTO fields and the source Product are as in the create response above. The offer name edit does not rename the source Product or generate a new URL.
+
+Complete proposed response:
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "Request completed successfully.",
+  "data": {
+    "id": "222222222222222222222222",
+    "slug": "logo-hoodie",
+    "slugAliases": [],
+    "name": { "en": "Classic Logo Hoodie", "ar": "هودي كلاسيكي بشعار" },
+    "description": { "en": "Fixed wholesale pouch.", "ar": "عبوة جملة بتكوين ثابت." },
+    "sourceStore": "b2b",
+    "productId": "111111111111111111111111",
+    "composition": [{ "variantId": null, "quantity": 30 }],
+    "piecesPerPouch": 30,
+    "isActive": true,
+    "isAvailable": true,
+    "product": {
+      "id": "111111111111111111111111",
+      "type": "simple",
+      "name": { "en": "Logo hoodie", "ar": "هودي بشعار" },
+      "description": { "en": "", "ar": "" },
+      "images": [],
+      "options": [],
+      "variants": []
+    },
+    "version": 1
+  },
+  "requestId": "77777777-7777-4777-8777-777777777777"
+}
+```
+
+A deliberate URL change uses the latest version:
+
+```json
+{ "version": 1, "slug": "classic-logo-hoodie" }
+```
+
+Its proposed complete 200 response has `slug: "classic-logo-hoodie"`, `slugAliases: ["logo-hoodie"]`, the same name/description/source/composition/product values as the prior response, and `version: 2`. The previous slug remains reserved permanently. If another URL change is later accepted, aliases contain both former canonical keys in history order.
+
+Complete proposed response:
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "Request completed successfully.",
+  "data": {
+    "id": "222222222222222222222222",
+    "slug": "classic-logo-hoodie",
+    "slugAliases": ["logo-hoodie"],
+    "name": { "en": "Classic Logo Hoodie", "ar": "هودي كلاسيكي بشعار" },
+    "description": { "en": "Fixed wholesale pouch.", "ar": "عبوة جملة بتكوين ثابت." },
+    "sourceStore": "b2b",
+    "productId": "111111111111111111111111",
+    "composition": [{ "variantId": null, "quantity": 30 }],
+    "piecesPerPouch": 30,
+    "isActive": true,
+    "isAvailable": true,
+    "product": {
+      "id": "111111111111111111111111",
+      "type": "simple",
+      "name": { "en": "Logo hoodie", "ar": "هودي بشعار" },
+      "description": { "en": "", "ar": "" },
+      "images": [],
+      "options": [],
+      "variants": []
+    },
+    "version": 2
+  },
+  "requestId": "88888888-8888-4888-8888-888888888888"
+}
+```
+
+The following three public requests all return the same complete 200 DTO below (localized by `X-Language`):
+
+```text
+GET /api/v1/b2b/wholesale/offers/resolve/classic-logo-hoodie
+GET /api/v1/b2b/wholesale/offers/resolve/logo-hoodie
+GET /api/v1/b2b/wholesale/offers/resolve/222222222222222222222222
+```
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "Request completed successfully.",
+  "data": {
+    "id": "222222222222222222222222",
+    "slug": "classic-logo-hoodie",
+    "slugAliases": ["logo-hoodie"],
+    "name": "Classic Logo Hoodie",
+    "description": "Fixed wholesale pouch.",
+    "sourceStore": "b2b",
+    "productId": "111111111111111111111111",
+    "composition": [{ "variantId": null, "quantity": 30 }],
+    "piecesPerPouch": 30,
+    "isActive": true,
+    "isAvailable": true,
+    "product": {
+      "id": "111111111111111111111111",
+      "type": "simple",
+      "name": "Logo hoodie",
+      "description": "",
+      "images": [],
+      "options": [],
+      "variants": []
+    },
+    "version": 2
+  },
+  "requestId": "22222222-2222-4222-8222-222222222222"
+}
+```
+
+The public offer list uses the same complete offer object, including both URL fields. Example one-item 200 list response:
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": "Request completed successfully.",
+  "data": {
+    "items": [
+      {
+        "id": "222222222222222222222222",
+        "slug": "classic-logo-hoodie",
+        "slugAliases": ["logo-hoodie"],
+        "name": "Classic Logo Hoodie",
+        "description": "Fixed wholesale pouch.",
+        "sourceStore": "b2b",
+        "productId": "111111111111111111111111",
+        "composition": [{ "variantId": null, "quantity": 30 }],
+        "piecesPerPouch": 30,
+        "isActive": true,
+        "isAvailable": true,
+        "product": {
+          "id": "111111111111111111111111",
+          "type": "simple",
+          "name": "Logo hoodie",
+          "description": "",
+          "images": [],
+          "options": [],
+          "variants": []
+        },
+        "version": 2
+      }
+    ],
+    "pagination": { "page": 1, "limit": 20, "total": 1, "pages": 1 }
+  },
+  "requestId": "33333333-3333-4333-8333-333333333333"
+}
+```
+
+Supplying `slug` or `slugAliases` to create, `slugAliases` to PATCH, or an invalid slug returns `422 VALIDATION_ERROR`. Example invalid create request and response for a supplied server-owned slug:
+
+```json
+{
+  "name": { "en": "Logo hoodie", "ar": "هودي بشعار" },
+  "sourceStore": "b2b",
+  "productId": "111111111111111111111111",
+  "composition": [{ "variantId": null, "quantity": 30 }],
+  "slug": "logo-hoodie"
+}
+```
+
+```json
+{
+  "success": false,
+  "code": "VALIDATION_ERROR",
+  "message": "Please check the submitted fields.",
+  "errors": [
+    { "field": "slug", "location": "body", "code": "INVALID_FIELD", "message": "This field is not accepted on create." }
+  ],
+  "requestId": "44444444-4444-4444-8444-444444444444"
+}
+```
+
+Example invalid format error for PATCH:
+
+```json
+{
+  "success": false,
+  "code": "VALIDATION_ERROR",
+  "message": "Please check the submitted fields.",
+  "errors": [
+    { "field": "slug", "location": "body", "code": "INVALID_FIELD", "message": "Use 1–150 lowercase letters, numbers and single hyphens." }
+  ],
+  "requestId": "55555555-5555-4555-8555-555555555555"
+}
+```
+
+An explicit slug already used by a current offer, alias, or retained deletion reservation returns `409 WHOLESALE_SLUG_EXISTS`:
+
+```json
+{ "version": 2, "slug": "logo-hoodie" }
+```
+
+```json
+{
+  "success": false,
+  "code": "WHOLESALE_SLUG_EXISTS",
+  "message": "This offer URL name is already used or reserved.",
+  "errors": [],
+  "requestId": "66666666-6666-4666-8666-666666666666"
+}
+```
+
+No example here claims a captured live response. The create/detail/list/resolver success payloads describe the same approved DTO and preserve the existing envelope.

@@ -226,6 +226,8 @@ The exact selected wholesale offer object fields are:
 | <code>version</code> | Non-negative integer | Current saved offer version supplied by client and revalidated at submission. |
 | <code>quantity</code> | Integer 1–10000 | Customer's requested count of whole pouches. This is added by Leads and is not a catalog offer field. |
 
+Stable Wholesale URL fields `slug` and `slugAliases` are intentionally excluded from Lead submission snapshots. Snapshot identity remains the offer ID and saved version; URL changes do not rewrite historical inquiries. A slug-only offer PATCH increments the offer version, so a pending selection may receive the existing `409 WHOLESALE_CONFLICT` and must be refreshed and reviewed by the customer.
+
 The nested <code>product</code> fields are:
 
 | Product field | Type / null behavior | Source and meaning |

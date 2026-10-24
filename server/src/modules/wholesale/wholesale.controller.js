@@ -6,6 +6,7 @@ export function createWholesaleController(wholesale) {
   return {
     async browse(req, res) { sendSuccess(res, { data: await wholesale.browse(req.context.store, req.validated.query, req.context.locale) }); },
     async publicItem(req, res) { sendSuccess(res, { data: await wholesale.getPublic(req.context.store, resource(req), req.context.locale) }); },
+    async resolve(req, res) { sendSuccess(res, { data: await wholesale.resolvePublic(req.context.store, req.validated.params.offerKey, req.context.locale) }); },
     async products(req, res) { sendSuccess(res, { data: await wholesale.listProducts(...input(req), req.validated.query) }); },
     async product(req, res) { sendSuccess(res, { data: await wholesale.getProduct(...input(req), resource(req)) }); },
     async createProduct(req, res) { sendSuccess(res, { status: 201, data: await wholesale.createProduct(...input(req), req.validated.body) }); },

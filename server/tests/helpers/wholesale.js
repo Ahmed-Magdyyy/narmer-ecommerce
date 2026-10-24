@@ -3,6 +3,7 @@ import { mediaFixture } from './media.js';
 import { createProductsService } from '../../src/modules/products/products.service.js';
 import { createMediaService } from '../../src/modules/media/media.service.js';
 import { createWholesaleService } from '../../src/modules/wholesale/wholesale.service.js';
+import { AppError } from '../../src/shared/errors/app-error.js';
 
 export const emptyWholesaleRepository = { async hasProductReferences() { return false; } };
 export const nativeInput = { name: { ar: 'منتج الجملة', en: 'Wholesale item' } };
@@ -12,6 +13,7 @@ export const offerInput = (sourceStore, productId, composition = [{ variantId: n
 export function wholesaleFixture(auth) {
   const p = productFixture(auth), m = mediaFixture(), nativeRows = new Map(), offerRows = new Map(), audits = [];
   const copy = value => structuredClone(value), rows = resource => resource === 'product' ? nativeRows : offerRows;
+  const offerKeys = new Map();
   let failure = false;
   const repository = {
     async lock() {},
@@ -25,6 +27,11 @@ export function wholesaleFixture(auth) {
       return [copy(selected.slice((input.page - 1) * input.limit, input.page * input.limit)), selected.length];
     },
     async find(resource, store, id) { return copy(rows(resource).get(id)?.store === store ? rows(resource).get(id) : null); },
+    async findOfferKey(store, key) { return copy(offerKeys.get(key)?.store === store ? offerKeys.get(key) : null); },
+    async reserveOfferKey(store, key, offerId) {
+      if (offerKeys.has(key)) throw new AppError(409, 'WHOLESALE_SLUG_EXISTS');
+      const row = { _id: key, store, offerId }; offerKeys.set(key, row); return copy(row);
+    },
     async findProducts(store, ids) { return copy([...nativeRows.values()].filter(row => row.store === store && row.isActive && ids.includes(row._id))); },
     async publicProductIds(store) { return [...nativeRows.values()].filter(row => row.store === store && row.isActive).map(row => row._id); },
     async create(resource, data) { rows(resource).set(data._id, copy(data)); return copy(data); },
@@ -41,9 +48,9 @@ export function wholesaleFixture(auth) {
     async audit(data) { if (failure) throw new Error('wholesale audit failed'); audits.push(copy(data)); },
   };
   const transaction = work => p.transaction(async session => {
-    const snapshot = [copy([...nativeRows]), copy([...offerRows]), copy(audits), copy([...m.rows])];
+    const snapshot = [copy([...nativeRows]), copy([...offerRows]), copy(audits), copy([...m.rows]), copy([...offerKeys])];
     try { return await work(session); }
-    catch (error) { for (const [map, data] of [[nativeRows, snapshot[0]], [offerRows, snapshot[1]], [m.rows, snapshot[3]]]) {
+    catch (error) { for (const [map, data] of [[nativeRows, snapshot[0]], [offerRows, snapshot[1]], [m.rows, snapshot[3]], [offerKeys, snapshot[4]]]) {
       map.clear(); for (const [id, row] of data) map.set(id, row);
     } audits.splice(0, audits.length, ...snapshot[2]); throw error; }
   });
@@ -53,6 +60,6 @@ export function wholesaleFixture(auth) {
   const media = createMediaService({ auth, storage: m.storage, repository: m.repository, now: m.now,
     targets: { product: { getStaff: (store, ...args) => store === 'b2b' ? wholesale.getProduct(store, ...args) : products.getStaff(store, ...args) } } });
   wholesale = createWholesaleService({ auth, products, media, repository, transaction });
-  return { ...p, products, wholesale, media, m, nativeRows, offerRows, wholesaleAudits: audits,
+  return { ...p, products, wholesale, media, m, nativeRows, offerRows, offerKeys, wholesaleAudits: audits,
     wholesaleRepository: repository, transaction, failWholesaleAudit(value) { failure = value; } };
 }

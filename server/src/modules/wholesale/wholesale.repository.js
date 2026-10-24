@@ -1,4 +1,5 @@
-import { WholesaleProduct, WholesaleOffer, WholesaleGuard, WholesaleAudit } from './wholesale.model.js';
+import { WholesaleProduct, WholesaleOffer, WholesaleOfferKey, WholesaleGuard, WholesaleAudit } from './wholesale.model.js';
+import { AppError } from '../../shared/errors/app-error.js';
 
 const model = resource => resource === 'product' ? WholesaleProduct : WholesaleOffer;
 function filter(store, input) {
@@ -13,7 +14,7 @@ function filter(store, input) {
 }
 export const wholesaleRepository = {
   async initialize() {
-    await Promise.all([WholesaleProduct.init(), WholesaleOffer.init(), WholesaleGuard.init(), WholesaleAudit.init()]);
+    await Promise.all([WholesaleProduct.init(), WholesaleOffer.init(), WholesaleOfferKey.init(), WholesaleGuard.init(), WholesaleAudit.init()]);
     await WholesaleGuard.updateOne({ _id: 'b2b' }, { $setOnInsert: { revision: 0 } }, { upsert: true });
   },
   lock: session => WholesaleGuard.findOneAndUpdate({ _id: 'b2b' }, { $inc: { revision: 1 } }, { upsert: true, session }).lean(),
@@ -22,6 +23,14 @@ export const wholesaleRepository = {
     model(resource).countDocuments(filter(store, input)),
   ]),
   find: (resource, store, id, session = null) => model(resource).findOne({ store, _id: id }).session(session).lean(),
+  findOfferKey: (store, key, session = null) => WholesaleOfferKey.findOne({ store, _id: key }).session(session).lean(),
+  async reserveOfferKey(store, key, offerId, session) {
+    try { return (await WholesaleOfferKey.create([{ _id: key, store, offerId }], { session }))[0].toObject(); }
+    catch (error) {
+      if (error.code === 11000) throw new AppError(409, 'WHOLESALE_SLUG_EXISTS');
+      throw error;
+    }
+  },
   findProducts: (store, ids, session = null) => WholesaleProduct.find({ store, _id: { $in: ids }, isActive: true }).session(session).lean(),
   publicProductIds: async store => (await WholesaleProduct.find({ store, isActive: true }).select('_id').lean()).map(row => String(row._id)),
   create: async (resource, data, session) => (await model(resource).create([data], { session }))[0].toObject(),

@@ -134,10 +134,77 @@ test('Wholesale submission snapshots validate current selections, whole-pouch qu
   const snapshot = await f.transaction(session => f.wholesale.getForSubmission('b2b', [request], session));
   assert.equal(snapshot[0].quantity, 2);
   assert.equal(snapshot[0].piecesPerPouch, 30);
+  assert.equal(Object.hasOwn(snapshot[0], 'slug'), false);
+  assert.equal(Object.hasOwn(snapshot[0], 'slugAliases'), false);
   noCommerceFields(snapshot);
   await assert.rejects(f.transaction(session => f.wholesale.getForSubmission('b2b', [request, request], session)), { code: 'INVALID_WHOLESALE' });
   await assert.rejects(f.transaction(session => f.wholesale.getForSubmission('b2b', [{ ...request, quantity: 1.5 }], session)), { code: 'INVALID_WHOLESALE' });
   await f.wholesale.updateOffer('b2b', admin, offer.id, { version: 0, composition: [{ quantity: 60 }] });
   assert.equal(snapshot[0].piecesPerPouch, 30);
   await assert.rejects(f.transaction(session => f.wholesale.getForSubmission('b2b', [request], session)), { code: 'WHOLESALE_CONFLICT' });
+});
+
+test('offer URLs are stable across localized reads, edits and concurrent automatic allocation', async () => {
+  const { f } = await setup();
+  const product = await f.wholesale.createProduct('b2b', admin, nativeInput);
+  const offers = await Promise.all(Array.from({ length: 4 }, () => f.wholesale.createOffer('b2b', admin, offerInput('b2b', product.id))));
+  assert.deepEqual(offers.map(row => row.slug), ['wholesale-pouch', 'wholesale-pouch-2', 'wholesale-pouch-3', 'wholesale-pouch-4']);
+  assert.ok(offers.every(row => row.slugAliases.length === 0));
+  let current = await f.wholesale.updateOffer('b2b', admin, offers[0].id, { version: 0, isActive: true,
+    name: { en: 'Changed display name' }, composition: [{ quantity: 60 }] });
+  await f.wholesale.updateProduct('b2b', admin, product.id, { version: 0, name: { en: 'Changed source name' } });
+  assert.equal(current.slug, 'wholesale-pouch');
+  const auditCount = f.wholesaleAudits.length, keys = structuredClone([...f.offerKeys]);
+  for (const language of ['ar', 'en']) for (const key of [current.slug, current.slug.toUpperCase(), current.id.toUpperCase()]) {
+    const resolved = await f.wholesale.resolvePublic('b2b', key, language);
+    assert.equal(resolved.id, current.id); assert.equal(resolved.slug, current.slug); assert.equal(resolved.version, 1);
+    assert.equal(typeof resolved.name, 'string');
+  }
+  assert.equal(f.wholesaleAudits.length, auditCount); assert.deepEqual([...f.offerKeys], keys);
+  assert.equal((await f.wholesale.browse('b2b', {})).items[0].slug, current.slug);
+  current = await f.wholesale.updateOffer('b2b', admin, current.id, { version: 1, slug: current.slug });
+  assert.equal(current.version, 2); assert.deepEqual(current.slugAliases, []);
+});
+
+test('deliberate URL changes retain history, reserve deleted keys and roll back failed writes', async () => {
+  const { f } = await setup();
+  const product = await f.wholesale.createProduct('b2b', admin, nativeInput);
+  let offer = await f.wholesale.createOffer('b2b', admin, { ...offerInput('b2b', product.id), isActive: true });
+  offer = await f.wholesale.updateOffer('b2b', admin, offer.id, { version: 0, slug: 'first-move' });
+  offer = await f.wholesale.updateOffer('b2b', admin, offer.id, { version: 1, slug: 'second-move' });
+  assert.deepEqual(offer.slugAliases, ['wholesale-pouch', 'first-move']);
+  for (const key of [...offer.slugAliases, offer.slug, offer.id]) assert.equal((await f.wholesale.resolvePublic('b2b', key)).slug, 'second-move');
+  for (const slug of offer.slugAliases) await assert.rejects(f.wholesale.updateOffer('b2b', admin, offer.id, { version: 2, slug }), { code: 'WHOLESALE_SLUG_EXISTS' });
+  const another = await f.wholesale.createOffer('b2b', admin, offerInput('b2b', product.id));
+  for (const slug of [...offer.slugAliases, offer.slug]) await assert.rejects(f.wholesale.updateOffer('b2b', admin, another.id, { version: 0, slug }), { code: 'WHOLESALE_SLUG_EXISTS' });
+  f.failWholesaleAudit(true);
+  await assert.rejects(f.wholesale.updateOffer('b2b', admin, offer.id, { version: 2, slug: 'failed-move', name: { en: 'Not committed' } }), /audit failed/);
+  f.failWholesaleAudit(false);
+  assert.equal(f.offerKeys.has('failed-move'), false);
+  assert.deepEqual(await f.wholesale.getOffer('b2b', admin, offer.id), offer);
+  const race = await Promise.allSettled(['winner-one', 'winner-two'].map(slug => f.wholesale.updateOffer('b2b', admin, offer.id, { version: 2, slug })));
+  assert.equal(race.filter(row => row.status === 'fulfilled').length, 1);
+  assert.equal(race.find(row => row.status === 'rejected').reason.code, 'WHOLESALE_CONFLICT');
+  const winner = race.find(row => row.status === 'fulfilled').value;
+  await f.wholesale.removeOffer('b2b', b2b, offer.id);
+  for (const key of [...winner.slugAliases, winner.slug, winner.id]) await assert.rejects(f.wholesale.resolvePublic('b2b', key), { code: 'WHOLESALE_OFFER_NOT_FOUND' });
+  await assert.rejects(f.wholesale.updateOffer('b2b', admin, another.id, { version: 0, slug: winner.slug }), { code: 'WHOLESALE_SLUG_EXISTS' });
+  assert.equal((await f.wholesale.createOffer('b2b', admin, offerInput('b2b', product.id))).slug, 'wholesale-pouch-3');
+});
+
+test('resolver preserves availability, pending-backfill behavior and ID-only legacy routes', async () => {
+  const { f, category, simple } = await setup();
+  let offer = await f.wholesale.createOffer('b2b', admin, { ...offerInput('b2c', simple.id), isActive: true });
+  await f.categories.update('b2c', b2c, category.id, { isActive: false });
+  offer = await f.wholesale.updateOffer('b2b', admin, offer.id, { version: 0, slug: 'hidden-source' });
+  assert.equal(offer.product, null); assert.equal(offer.isAvailable, false);
+  for (const key of [offer.id, offer.slug, ...offer.slugAliases]) await assert.rejects(f.wholesale.resolvePublic('b2b', key), { code: 'WHOLESALE_OFFER_NOT_FOUND' });
+  assert.equal((await f.wholesale.browse('b2b', {})).items.length, 0);
+  await assert.rejects(f.wholesale.getPublic('b2b', offer.slug), { code: 'INVALID_WHOLESALE' });
+  const row = f.offerRows.get(offer.id); delete row.slug; delete row.slugAliases;
+  await assert.rejects(f.wholesale.resolvePublic('b2b', offer.id), { code: 'WHOLESALE_OFFER_NOT_FOUND' });
+  await assert.rejects(f.wholesale.getOffer('b2b', admin, offer.id), { code: 'NOT_READY' });
+  await f.categories.update('b2c', b2c, category.id, { isActive: true });
+  await assert.rejects(f.wholesale.getPublic('b2b', offer.id), { code: 'NOT_READY' });
+  assert.equal(Object.hasOwn(row, 'slug'), false);
 });

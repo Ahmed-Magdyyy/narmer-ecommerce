@@ -2,11 +2,13 @@ import { Router } from 'express';
 import { requireRoles } from '../auth/auth.middleware.js';
 import { createWholesaleController } from './wholesale.controller.js';
 import { wholesaleIdValidator, wholesaleProductListValidator, wholesaleOfferListValidator, wholesaleB2cListValidator,
-  createWholesaleProductValidator, updateWholesaleProductValidator, createWholesaleOfferValidator, updateWholesaleOfferValidator } from './wholesale.validator.js';
+  createWholesaleProductValidator, updateWholesaleProductValidator, createWholesaleOfferValidator, updateWholesaleOfferValidator,
+  wholesaleOfferKeyValidator } from './wholesale.validator.js';
 
 export function createWholesaleRouter(wholesale) {
   const router = Router(), controller = createWholesaleController(wholesale);
   router.get('/offers', wholesaleOfferListValidator, controller.browse);
+  router.get('/offers/resolve/:offerKey', wholesaleOfferKeyValidator, controller.resolve);
   router.get('/offers/:resourceId', wholesaleIdValidator, controller.publicItem);
   return router;
 }

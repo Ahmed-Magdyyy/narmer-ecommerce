@@ -74,9 +74,48 @@ test('Wholesale HTTP isolates both catalogs, roles, source selection, mixed pouc
     body: { version: 0, imageIds: [upload.body.data.id] } })).status, 200);
   const offer = await request(`${base}/offers`, { method: 'POST', token: adminToken, body: { ...offerInput('b2b', nativeId), isActive: true } });
   assert.equal(offer.status, 201); assert.equal(offer.body.data.piecesPerPouch, 30);
+  assert.equal(offer.body.data.slug, 'wholesale-pouch');
+  assert.deepEqual(offer.body.data.slugAliases, []);
+  const offerId = offer.body.data.id;
+  for (const key of ['wholesale-pouch', 'WHOLESALE-POUCH', offerId.toUpperCase()]) {
+    const resolved = await request(`b2b/wholesale/offers/resolve/${key}`);
+    assert.equal(resolved.status, 200); assert.equal(resolved.body.data.id, offerId);
+  }
+  for (const key of ['bad--key', 'a'.repeat(151), '%252f', 'bad%20key']) {
+    const invalid = await request(`b2b/wholesale/offers/resolve/${key}`);
+    assert.equal(invalid.status, 422); assert.equal(invalid.body.code, 'VALIDATION_ERROR');
+    assert.equal(invalid.body.errors[0].field, 'offerKey'); assert.equal(invalid.body.errors[0].location, 'params');
+  }
+  assert.equal((await request('b2b/wholesale/offers/resolve/unknown-key')).status, 404);
+  assert.equal((await request('b2b/wholesale/offers/wholesale-pouch')).status, 422);
+  for (const body of [{ slug: 'custom-create' }, { slugAliases: [] }, { slug: null }]) {
+    assert.equal((await request(`${base}/offers`, { method: 'POST', token: adminToken,
+      body: { ...offerInput('b2b', nativeId), ...body } })).status, 422);
+  }
+  for (const body of [{ slug: null }, { slug: '' }, { slug: 'Upper' }, { slug: 'a'.repeat(24) }, { slug: 3 }, { slugAliases: [] }]) {
+    const invalid = await request(`${base}/offers/${offerId}`, { method: 'PATCH', token: adminToken, body: { version: 0, ...body } });
+    assert.equal(invalid.status, 422); assert.equal(invalid.body.code, 'VALIDATION_ERROR');
+  }
+  for (const token of [moderator, customer, b2cToken]) assert.equal((await request(`${base}/offers/${offerId}`,
+    { method: 'PATCH', token, body: { version: 0, slug: 'forbidden-change' } })).status, token === b2cToken ? 401 : 403);
+  const moved = await request(`${base}/offers/${offerId}`, { method: 'PATCH', token: adminToken, body: { version: 0, slug: '  stable-offer  ' } });
+  assert.equal(moved.status, 200); assert.equal(moved.body.data.slug, 'stable-offer');
+  assert.deepEqual(moved.body.data.slugAliases, ['wholesale-pouch']);
+  const alias = await request('b2b/wholesale/offers/resolve/wholesale-pouch');
+  assert.equal(alias.status, 200); assert.deepEqual(alias.body.data, { ...moved.body.data,
+    name: moved.body.data.name.en, description: moved.body.data.description.en,
+    product: { ...moved.body.data.product, name: moved.body.data.product.name.en, description: moved.body.data.product.description.en } });
+  for (const key of ['stable-offer', offerId]) assert.equal((await request(`b2b/wholesale/offers/resolve/${key}`)).body.data.slug, 'stable-offer');
+  assert.equal((await request(`${base}/offers/${offerId}`, { token: adminToken })).body.data.slug, 'stable-offer');
+  assert.equal((await request(`${base}/offers`, { token: adminToken })).body.data.items[0].slug, 'stable-offer');
+  const nameEdit = await request(`${base}/offers/${offerId}`, { method: 'PATCH', token: adminToken, body: { version: 1, name: { en: 'Renamed pouch' } } });
+  assert.equal(nameEdit.status, 200); assert.equal(nameEdit.body.data.slug, 'stable-offer');
+  const conflict = await request(`${base}/offers/${offerId}`, { method: 'PATCH', token: adminToken, body: { version: 2, slug: 'wholesale-pouch' } });
+  assert.equal(conflict.status, 409); assert.equal(conflict.body.code, 'WHOLESALE_SLUG_EXISTS');
+  assert.equal(Object.hasOwn(conflict.body, 'data'), false);
   const publicOffer = await request(`b2b/wholesale/offers/${offer.body.data.id}`, { language: 'ar' });
   assert.equal(publicOffer.status, 200); assert.equal(publicOffer.body.data.product.name, 'منتج الجملة');
-  assert.equal(publicOffer.body.data.product.images.length, 1); assert.equal(publicOffer.body.data.version, 0);
+  assert.equal(publicOffer.body.data.product.images.length, 1); assert.equal(publicOffer.body.data.version, 2);
   const mixed = await request(`${base}/offers`, { method: 'POST', token: adminToken,
     body: { ...offerInput('b2c', variant.id, variant.variants.map((row, i) => ({ variantId: row.id, quantity: i ? 20 : 10 }))), isActive: true } });
   assert.equal(mixed.status, 201); assert.equal(mixed.body.data.piecesPerPouch, 30);
