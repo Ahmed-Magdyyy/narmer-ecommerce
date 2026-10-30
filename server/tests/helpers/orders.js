@@ -18,6 +18,7 @@ export function ordersFixture(auth,catalog,{shipping,storage,trackingSecret='tes
     async createCheckout(data){const row={...copy(data),_id:newId(),createdAt:now(),updatedAt:now()};checkouts.set(row._id,row);return copy(row);},
     async findCheckout(store,id,ownerKey){const row=owned(checkouts,store,id);return copy(row?.ownerKey===ownerKey ? row : null);},
     async create(data){if(failure)throw new Error('order write failed');
+      if([...rows.values()].some(row=>row.orderNumber===data.orderNumber))throw Object.assign(new Error('duplicate order number'),{code:11000,keyPattern:{orderNumber:1}});
       if([...rows.values()].some(row=>row.store===data.store&&row.checkoutId===data.checkoutId))throw Object.assign(new Error('duplicate'),{code:11000});
       const row={...copy(data),createdAt:now(),updatedAt:now()};rows.set(row._id,row);return copy(row);},
     async findByCheckout(store,id){return copy([...rows.values()].find(row=>row.store===store&&String(row.checkoutId)===String(id))??null);},

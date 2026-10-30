@@ -55,6 +55,14 @@ test('report HTTP covers three routes, role/store boundaries, complete DTOs, str
     assert.equal((await request(endpoint, reportRange, tokens['b2b-admin'])).status, 401);
   }
   assert.equal((await request('overview', reportRange, tokens.superAdmin, 'b2c', 'ar')).data.topProducts[0].name, 'قميص قديم');
+  assert.equal((await request('overview')).data.recentOrders[0].orderNumber, order.orderNumber);
+  assert.deepEqual((await request('overview')).data.recentOrders[0].history[1].actor,{name:'Historical Staff',role:'moderator'});
+  const actor=order.history[1].actor;delete order.history[1].actor;
+  assert.equal((await request('overview')).data.recentOrders[0].history[1].actor,null);
+  assert.equal(Object.hasOwn(order.history[1],'actor'),false);order.history[1].actor=actor;
+  const number = order.orderNumber; delete order.orderNumber;
+  assert.equal((await request('overview')).data.recentOrders[0].orderNumber, null);
+  assert.equal(Object.hasOwn(order, 'orderNumber'), false); order.orderNumber = number;
   assert.equal((await request('sales-performance', { ...reportRange, interval: 'week', rankBy: 'merchandiseAmount', page: 1, limit: 10 })).status, 200);
   for (const query of [{}, { ...reportRange, from: '2026-01-01' }, { ...reportRange, from: '2026-02-30T00:00:00Z' },
     { ...reportRange, from: reportRange.to }, { ...reportRange, timezone: 'UTC' }, { ...reportRange, interval: 'year' },

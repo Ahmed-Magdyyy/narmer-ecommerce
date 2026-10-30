@@ -248,6 +248,7 @@ Customer detail, customer list, guest tracking, and `placement.data.order` use t
 | Field | Customer DTO | Staff DTO | Type/meaning |
 |---|---|---|---|
 | `id` | yes | yes | Lowercase Order ObjectId string. |
+| `orderNumber` | yes | yes | Required response key, string or null. New Orders have a server-generated 19-character reference such as `NRM-20261030-74M9Y3`; existing unnumbered Orders return null. Display this reference to customers and staff; retain `id` for API requests. |
 | `status` | yes | yes | `pending`, `accepted`, `shipped`, `delivered`, `canceled`, or `returned`. |
 | `customer` | yes | yes | `{name,email,phone}` snapshot; email lowercased, phone normalized. |
 | `address` | yes | yes | `{governorateCode,governorate,district,building,street,floor,apartment,details}` immutable delivery snapshot. Optional text fields are present as empty strings when absent. |
@@ -258,7 +259,7 @@ Customer detail, customer list, guest tracking, and `placement.data.order` use t
 | `currency` | yes | yes | Literal `EGP`. |
 | `payment` | yes | yes | Common and role-specific payment fields below. |
 | `refund` | yes | yes | Null until status becomes canceled/returned; then `{amount,at}` for customer and also `actorId` for staff. Marker only, not proof a bank/cash refund happened. |
-| `history` | yes | yes | Ordered array of `{status,at}` for customer; staff entries also include nullable `actorId`. Initial event is pending with `actorId:null`. |
+| `history` | yes | yes | Ordered array of `{status,at}` for customer; staff entries also include required nullable `actorId` and `actor`. Initial placement has both null. See the staff history contract below. |
 | `createdAt`,`updatedAt` | yes | yes | ISO UTC timestamps from database. |
 | `userId` | no | yes | Account ObjectId or null for guest Order. |
 | `stockRestored` | no | yes | Boolean; true after cancellation/return stock restoration. |
@@ -370,6 +371,7 @@ The first placement returns HTTP 201 and this exact `data` shape; the shared env
   "data": {
     "order": {
       "id": "66f000000000000000000050",
+      "orderNumber": "NRM-20261011-74M9Y3",
       "status": "pending",
       "customer": { "name": "Mona Saleh", "email": "mona@example.test", "phone": "+201001234567" },
       "address": {
@@ -444,7 +446,8 @@ Staff detail/list/status use the common customer Order fields above and add thes
     {
       "status": "pending",
       "at": "2026-10-11T12:01:00.000Z",
-      "actorId": null
+      "actorId": null,
+      "actor": null
     }
   ],
   "refund": null,
@@ -520,7 +523,7 @@ Staff detail/list/status use the common customer Order fields above and add thes
 }
 ```
 
-This is a fragment showing additions and role-specific replacements, not a standalone Order response. Actual `quotedPreview.items` and coupon match the checkout preview snapshot. Customer response history omits `actorId`; staff response history includes it, including null for the initial customer-created pending event. Staff `refund` adds `actorId` when present.
+This is a fragment showing additions and role-specific replacements, not a standalone Order response. Actual `quotedPreview.items` and coupon match the checkout preview snapshot. Customer response history omits both `actorId` and `actor`; staff response history includes both, with null for the initial customer-created pending event. Staff `refund` adds `actorId` when present; the history snapshot does not add fields to refund/payment markers.
 
 ### COD, status, and settings request/response examples
 
@@ -536,7 +539,7 @@ Staff status change request from pending to accepted is:
 { "status": "accepted", "expectedStatus": "pending" }
 ```
 
-The response `data` is the complete updated staff Order DTO, including staff-only `userId`, `stockRestored`, `quotedPreview`, payment staff IDs/timestamps, and history `actorId`. A same-current-status request returns HTTP 200 with the same DTO and does not append history.
+The response `data` is the complete updated staff Order DTO, including staff-only `userId`, `stockRestored`, `quotedPreview`, payment staff IDs/timestamps, and history `actorId` and `actor`. A same-current-status request returns HTTP 200 with the same DTO and does not append history or replace a saved actor snapshot.
 
 Get settings returns `data: { "receivingAccount": null }` when unset. To set it:
 
@@ -655,3 +658,19 @@ These counters are local to the confirmed single Node.js process and reset on re
 Every item in a newly calculated checkout preview, final Order, quotedPreview and recent staff Orders in [Reports](../reports/REPORTS_FRONTEND.md) includes category:null|{id,name}. id is the assigned direct-category ObjectId string and name is localized from a bilingual snapshot. The server captures it under the catalog transaction lock; the FE does not submit it. Quote and placement take independent snapshots, so a category changed between them can differ just as final prices can differ from an earlier quote. Older absent/null category fields are normalized to null in DTOs and grouped as “Unknown category” in reports. No migration or current-category reconstruction is performed. Render an appropriate localized unknown label and do not infer parent-category totals.
 
 Product/category names and group attribution remain historical; later renaming/reparenting/deletion does not rewrite snapshots. The Reports module reuses the existing staff Order DTO for recentOrders rather than defining another response. Its aggregates distinguish all-status placed-order totals, currently delivered product sales by creation date, collection event markers and refund event markers. Only B2C superAdmin/admin may read reports; moderator Order-detail/status permissions remain unchanged. No checkout request, stock restoration, coupon use, payment verification, refund handling or cancellation transition changes.
+
+## Order numbers for new Orders
+
+`orderNumber` is immutable server output: `NRM-YYYYMMDD-XXXXXX`, exactly 19 characters. Date uses the captured placement time in Africa/Cairo, including daylight-saving rules. Six cryptographic base-36 characters use 0–9/A–Z with leading zeroes. It is not sequential. A unique partial string index enforces uniqueness; a number collision retries the entire transaction, at most five attempts. Exhaustion is HTTP 409 ORDER_REQUEST_CONFLICT; retain checkout/proof state and bound any exact replay. Failed transactions consume no stock, coupon, proof, Cart or notification writes.
+
+All Order DTOs, including Reports recentOrders, return the required key: string for new Orders, null for existing unnumbered Orders. No backfill occurs on reads, replay or status changes. Exact replay retains the saved number across dates. Display the number or fallback id; API paths, tracking URLs and relationships keep id. The reference grants no authorization and has no lookup endpoint.
+
+See the [combined FE response](../../../../docs/frontend/order-number-and-history-frontend-response.md) for examples, lifecycle, endpoint locations, recovery and rollout/rollback limits.
+
+## Staff status-history actors
+
+Staff history adds required nullable actor alongside actorId. A non-null actor is {name,role}: name is a required nonempty string up to 100 characters; role is required superAdmin/admin/moderator. Source is the account returned by authorization inside the status transaction; request fields cannot choose it. Later account changes/deletion do not replace the snapshot. Successful transitions append it atomically; failure appends nothing and same-status replay preserves history. New actions on older Orders capture actors; initial placement and existing uncaptured events return null without backfill.
+
+Staff list/detail/status and Reports recentOrders expose both fields. Customer placement/replay/list/detail and guest tracking omit both. Refund/payment markers are unchanged. Rename **Staff reference** to **By**: initial pending with null actorId shows **Order placed**; saved actors show **Moderator: {{actor.name}}**, **Admin: {{actor.name}}** or **Super admin: {{actor.name}}**; uncaptured events show **Staff member unavailable**. Do not display IDs, guess actors, query current profiles per row or label other null snapshots as placement.
+
+Existing {status,expectedStatus} requests, roles, errors, rate limits and no-store rules remain. Reload on 409 ORDER_STATUS_CONFLICT. See the [combined FE response](../../../../docs/frontend/order-number-and-history-frontend-response.md) for full field tables, synthetic actor examples, privacy, frontend display logic and acceptance checks.

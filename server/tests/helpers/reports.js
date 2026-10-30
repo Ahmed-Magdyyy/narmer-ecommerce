@@ -9,7 +9,7 @@ export function reportOrder(number = 1, changes = {}) {
     values: null, sku: null, quantity: 2, price: 6000, discountedPrice: 5000, unitPrice: 5000,
     lineTotal: 10000, couponDiscount: 1000, lineTotalAfterDiscount: 9000, activeSale: null };
   const shipping = { id: null, governorateCode: 'cairo', name: null, fee: 5000, currency: 'EGP', source: 'default' };
-  return { _id: id, store: 'b2c', ownerKey: `u:${id}`, userId: id, checkoutId: id, requestDigest: 'test', trackingHash: 'test',
+  return { _id: id, orderNumber: `NRM-20260110-${number.toString(36).toUpperCase().padStart(6, '0')}`, store: 'b2c', ownerKey: `u:${id}`, userId: id, checkoutId: id, requestDigest: 'test', trackingHash: 'test',
     trackingExpiresAt: new Date('2027-01-01T00:00:00Z'), status: 'delivered', notificationLocale: 'en',
     customer: { name: 'Test buyer', email: 'buyer@example.test', phone: '201001234567' },
     address: { governorateCode: 'cairo', governorate: 'Cairo', district: 'Test district', building: '1', street: 'Test street', floor: '', apartment: '', details: '' },
@@ -17,6 +17,7 @@ export function reportOrder(number = 1, changes = {}) {
     quotedPreview: { items: [item], shipping, coupon: null, totals: { subtotal: 10000, discountAmount: 1000, shippingFee: 5000, total: 14000 },
       currency: 'EGP', quotedAt: date.toISOString(), receivingAccount: null },
     payment: { method: 'cod', proofId: null, receivingAccount: null, verifiedAt: null, verifiedBy: null, cashCollectedAt: date, cashCollectedBy: id },
-    refund: null, stockRestored: false, history: [{ status: 'pending', at: date, actorId: null }, { status: 'delivered', at: date, actorId: id }],
+    refund: null, stockRestored: false, history: [{ status: 'pending', at: date, actorId: null, actor: null },
+      { status: 'delivered', at: date, actorId: id, actor: { name: 'Historical Staff', role: 'moderator' } }],
     createdAt: date, updatedAt: date, ...changes };
 }

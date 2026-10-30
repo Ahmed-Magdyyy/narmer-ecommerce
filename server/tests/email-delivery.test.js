@@ -52,6 +52,7 @@ test('delivery is disabled by store/SMTP, deduplicates committed events and neve
   await Promise.all([f.service.enqueue(event(f), {}), f.service.enqueue(event(f), {})]); assert.equal(f.rows.size, 1);
   await Promise.all([f.service.drain(), f.service.drain()]); assert.equal(f.messages.length, 1);
   assert.ok(f.messages[0].text.includes(`#${source.trackingToken}`));
+  assert.ok(f.messages[0].text.includes(`Reference: ${event(f).resourceId}`));
   assert.ok(!JSON.stringify([...f.rows.values()]).includes(source.trackingToken)); assert.deepEqual(f.logs, []);
   f.config.smtp = null; assert.deepEqual(await f.service.drain(), { sent: 0, failed: 0, skipped: 0 });
 });
@@ -104,7 +105,7 @@ test('Lead emails share submission/contact transactions, preserve initial locale
 
 test('Order emails are atomic with stock/cart, preserve buyer locale and enqueue once for each real status change', async () => {
   const staff = { store: 'b2c', role: 'superAdmin', userId: 'a'.repeat(24) }, guest = { guestToken: 'a'.repeat(43) };
-  const auth = { async authorizeStaff(store, identity, roles) { if (!roles.includes(identity?.role)) throw new AppError(403, 'FORBIDDEN'); return { _id: identity.userId }; } };
+  const auth = { async authorizeStaff(store, identity, roles) { if (!roles.includes(identity?.role)) throw new AppError(403, 'FORBIDDEN'); return { _id: identity.userId, name: 'Test Owner', role: identity.role }; } };
   const p = cartFixture(auth), c = couponsFixture(auth, p), sh = shippingFixture(auth), d = deliveryFixture();
   await sh.shipping.setDefault('b2c', staff, { defaultFee: 5000 });
   const category = await c.categories.create('b2c', staff, { name: { en: 'Clothing', ar: 'ملابس' }, slug: 'clothing' });
@@ -126,6 +127,8 @@ test('Order emails are atomic with stock/cart, preserve buyer locale and enqueue
   assert.equal((await c.products.getPublic('b2c', product.id)).stock, 10);
   d.fail(false); d.advance(60001); await d.service.drain(); assert.equal(d.messages.length, 2);
   assert.ok(d.messages[1].text.includes('خارج النظام'));
+  assert.ok(d.messages.every(message => message.text.includes(`رقم الطلب: ${receipt.order.orderNumber}`)));
+  assert.ok(d.messages.every(message => message.text.includes(receipt.order.id)));
   const rotated = createOrdersService({ repository: f.repository, trackingSecret: 'changed-order-key', now: f.now });
   assert.equal((await rotated.getEmailSource(receipt.order.id)).canTrack, false);
   assert.equal((await rotated.track('b2c', receipt.order.id, receipt.trackingToken)).id, receipt.order.id);

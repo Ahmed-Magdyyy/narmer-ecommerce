@@ -33,7 +33,7 @@ export function createEmailDelivery({ config, email, sources = {}, repository = 
           const received = ['order.placed', 'lead.submitted'].includes(job.event);
           const intro = received ? (ar ? 'استلمنا طلبك.' : 'We received your request.') : (ar ? 'تم تسجيل تحديث لطلبك.' : 'An update was recorded for your request.');
           const lines = [ar ? `مرحباً ${source.name}،` : `Hello ${source.name},`, intro,
-            `${ar ? 'رقم الطلب' : 'Reference'}: ${job.resourceId}`, `${ar ? 'الحالة المسجلة' : 'Recorded status'}: ${status}`,
+            `${ar ? 'رقم الطلب' : 'Reference'}: ${order ? source.orderNumber ?? job.resourceId : job.resourceId}`, `${ar ? 'الحالة المسجلة' : 'Recorded status'}: ${status}`,
             `${ar ? 'وقت التحديث' : 'Update time'}: ${new Date(job.eventAt).toISOString()}`];
           if (order) lines.push(`${ar ? 'الإجمالي' : 'Total'}: ${new Intl.NumberFormat(job.locale === 'ar' ? 'ar-EG' : 'en-EG', { style: 'currency', currency: 'EGP' }).format(source.total / 100)}`);
           if (['canceled', 'returned'].includes(job.resourceStatus)) lines.push(ar ? 'يتولى فريقنا معالجة أي استرداد مالي خارج النظام.' : 'Our staff handles any refund offline.');

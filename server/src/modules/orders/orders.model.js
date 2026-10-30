@@ -35,8 +35,13 @@ const payment = new mongoose.Schema({
 const event = new mongoose.Schema({
   status: { type: String, enum: orderStatuses, required: true }, at: { type: Date, required: true },
   actorId: { type: mongoose.Schema.Types.ObjectId, default: null },
+  actor: { type: new mongoose.Schema({
+    name: { type: String, required: true, maxlength: 100 },
+    role: { type: String, required: true, enum: ['superAdmin', 'admin', 'moderator'] },
+  }, options), default: null },
 }, options);
 const order = new mongoose.Schema({
+  orderNumber: { type: String, required: true, immutable: true, match: /^NRM-\d{8}-[A-Z0-9]{6}$/ },
   notificationLocale: { type: String, enum: ['ar', 'en'], default: 'en' },
   store: { type: String, enum: ['b2c'], required: true, immutable: true },
   ownerKey: { type: String, required: true, immutable: true }, userId: { type: mongoose.Schema.Types.ObjectId, default: null, immutable: true },
@@ -54,6 +59,7 @@ const order = new mongoose.Schema({
   stockRestored: { type: Boolean, default: false, required: true }, history: { type: [event], required: true },
 }, { timestamps: true, strict: 'throw' });
 order.index({ store: 1, checkoutId: 1 }, { unique: true });
+order.index({ orderNumber: 1 }, { unique: true, partialFilterExpression: { orderNumber: { $type: 'string' } } });
 order.index({ store: 1, userId: 1, createdAt: -1, _id: -1 });
 order.index({ store: 1, status: 1, createdAt: -1, _id: -1 });
 order.index({ store: 1, 'items.productId': 1 });

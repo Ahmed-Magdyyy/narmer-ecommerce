@@ -60,7 +60,7 @@ The worker creates one text-only message; there are no attachments or HTML templ
 
 - Greeting with name read from the current resource snapshot.
 - A received confirmation for <code>order.placed</code> and <code>lead.submitted</code>; other events say an update was recorded.
-- Resource reference ID, event's recorded status, and event timestamp in ISO-8601 form.
+- Resource reference, event's recorded status, and event timestamp in ISO-8601 form. B2C uses the persisted `orderNumber` when present and falls back to the MongoDB Order ID for existing unnumbered Orders. B2B keeps its Lead ID. Tracking links and queue resource IDs always retain the MongoDB ID; a readable reference does not grant access.
 - B2C Orders only: order total formatted as EGP from the stored integer amount in minor units. No bank/payment verification claim is made.
 - For <code>canceled</code> or <code>returned</code> B2C statuses, a sentence says staff handles any refund offline. It does not claim that a refund has been issued.
 - If a valid link is available, a “Track the latest status” link and a warning to keep it private.
@@ -137,3 +137,7 @@ The application composes two separate handlers on the existing Order/Lead event 
 Status/contact events create only the existing eligible customer email jobs, not additional arrival rows. Customer delivery disabled by SMTP/templates or missing optional Lead email does not disable the staff feed. Staff mark-as-read APIs do not inspect/reset email jobs, retry SMTP or update Order/Lead state. The existing notifications:deliver command still drains only customer email jobs.
 
 The expanded combined database proof is available as npm --prefix server run test:db:notifications or test:db:emails; both aliases run the same asserted disposable-database test with mocked SMTP. It passed staff/email/business rollback, source replay, actual personal feed queries and competing delivery leases. This does not prove live SMTP inbox arrival or deployed frontend polling.
+
+## Order-history actor scope
+
+The Order `history[].actor` name/role snapshot is staff-only response data. Transactional customer emails keep the order-number/legacy-ID reference and existing ID/token tracking link; they do not include staff names, roles or history actor snapshots. The queue and B2B references are unchanged.

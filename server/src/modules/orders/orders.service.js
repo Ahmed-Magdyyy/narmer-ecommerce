@@ -1,4 +1,4 @@
-import { randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { AppError } from '../../shared/errors/app-error.js';
 import { runTransaction } from '../../shared/utils/transaction.js';
 import { processCatalogImage } from '../../shared/infrastructure/media/image.js';
@@ -18,6 +18,11 @@ const staffRoles = ['superAdmin', 'admin', 'moderator'];
 const transitions = { pending: ['accepted', 'canceled'], accepted: ['shipped', 'canceled'], shipped: ['delivered'], delivered: ['returned'], canceled: [], returned: [] };
 const iso = value => value ? new Date(value).toISOString() : null;
 const local = (value, locale) => value && typeof value === 'object' ? value[locale] : value;
+const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' });
+export function makeOrderNumber(at) {
+  const parts = Object.fromEntries(orderDate.formatToParts(at).map(({ type, value }) => [type, value]));
+  return `NRM-${parts.year}${parts.month}${parts.day}-${randomInt(36 ** 6).toString(36).padStart(6, '0').toUpperCase()}`;
+}
 function inputFrom(input) {
   const text = (value, max, required = true) => {
     if (typeof value !== 'string' || value.trim().length > max || (required && !value.trim())) invalid(); return value.trim();
@@ -46,10 +51,13 @@ export function orderView(row, locale, staff = false) {
     hasProof: row.payment.proofId !== null, verifiedAt: iso(row.payment.verifiedAt), cashCollectedAt: iso(row.payment.cashCollectedAt),
     ...(staff ? { proofId: row.payment.proofId ? id(row.payment.proofId) : null,
       verifiedBy: row.payment.verifiedBy ? id(row.payment.verifiedBy) : null, cashCollectedBy: row.payment.cashCollectedBy ? id(row.payment.cashCollectedBy) : null } : {}) };
-  return { id: id(row._id), status: row.status, customer: row.customer, address: row.address, items: priced.items,
+  return { id: id(row._id), orderNumber: row.orderNumber ?? null, status: row.status, customer: row.customer, address: row.address, items: priced.items,
     coupon: priced.coupon, shipping: priced.shipping, totals: row.totals,currency:'EGP',payment,
     refund: row.refund ? { amount:row.refund.amount,at:iso(row.refund.at),...(staff ? { actorId:id(row.refund.actorId) } : {}) } : null,
-    history: row.history.map(event => ({ status:event.status,at:iso(event.at),...(staff ? { actorId:event.actorId ? id(event.actorId) : null } : {}) })),
+    history: row.history.map(event => ({ status:event.status,at:iso(event.at),...(staff ? {
+      actorId:event.actorId ? id(event.actorId) : null,
+      actor:event.actor ? { name:event.actor.name,role:event.actor.role } : null,
+    } : {}) })),
     createdAt:iso(row.createdAt),updatedAt:iso(row.updatedAt),
     ...(staff ? { userId:row.userId ? id(row.userId) : null,stockRestored:row.stockRestored,
       quotedPreview:presentPreview(row.quotedPreview,locale) } : {}) };
@@ -141,32 +149,38 @@ export function createOrdersService({ auth, cart, products, coupons, shipping, s
     async place(store,owner,input,locale='en') {
       checkStore(store);const checkoutId=ids(input.checkoutId),proofId=input.proofId===undefined ? null : ids(input.proofId);
       const digest=hash(JSON.stringify([checkoutId,proofId]));const orderId=newId(),at=now();
-      try { return await transaction(async session => {
-        const owned=await cart.checkoutOwner(store,owner,session);await products.lockForCart(store,session);
-        const existing=await repository.findByCheckout(store,checkoutId,session);
-        if (existing) {
-          if (existing.ownerKey!==owned.ownerKey) throw new AppError(404,'ORDER_NOT_FOUND');
-          if (existing.requestDigest!==digest) throw new AppError(409,'ORDER_REQUEST_CONFLICT');
-          return placementView(existing,locale,false);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try { return await transaction(async session => {
+          const owned=await cart.checkoutOwner(store,owner,session);await products.lockForCart(store,session);
+          const existing=await repository.findByCheckout(store,checkoutId,session);
+          if (existing) {
+            if (existing.ownerKey!==owned.ownerKey) throw new AppError(404,'ORDER_NOT_FOUND');
+            if (existing.requestDigest!==digest) throw new AppError(409,'ORDER_REQUEST_CONFLICT');
+            return placementView(existing,locale,false);
+          }
+          const {checkout}=await scopedCheckout(store,owner,checkoutId,session,at);
+          if (checkout.input.paymentMethod==='instapay' ? !proofId : proofId!==null) invalid();
+          const current=await cart.getForCoupon(store,owner,{session,locale:null,at});
+          if (selections(current)!==checkout.selections) throw new AppError(409,'CHECKOUT_CART_CHANGED');
+          const {preview}=await calculate(store,owner,checkout.input,session,at,orderId);
+          if (proofId && !await repository.attachProof(store,proofId,checkoutId,owned.ownerKey,orderId,at,session)) throw new AppError(409,'ORDER_PROOF_CONFLICT');
+          await products.adjustOrderStock(store,preview.items,{session});
+          const data={_id:orderId,orderNumber:makeOrderNumber(at),store,...owned,checkoutId,requestDigest:digest,status:'pending',notificationLocale:locale,customer:checkout.input.customer,
+            address:checkout.input.address,items:preview.items,totals:preview.totals,shipping:preview.shipping,coupon:preview.coupon,
+            quotedPreview:checkout.preview,payment:{method:checkout.input.paymentMethod,proofId,receivingAccount:checkout.preview.receivingAccount,
+              verifiedAt:null,verifiedBy:null,cashCollectedAt:null,cashCollectedBy:null},refund:null,stockRestored:false,
+            history:[{status:'pending',at,actorId:null,actor:null}],trackingExpiresAt:new Date(at.getTime()+90*24*60*60*1000)};
+          data.trackingHash=hash(tokenFor(data));
+          const row=await repository.create(data,session);await cart.consumeForOrder(store,owner,session);
+          await notifications?.enqueue({ store, resourceId: orderId, event: 'order.placed', resourceStatus: 'pending',
+            eventAt: at, to: row.customer.email, locale }, session);
+          return placementView(row,locale,true);
+        }); } catch(error) {
+          if (error.code !== 11000) throw error;
+          // A duplicate key aborts the transaction; retry the complete placement only for a number collision.
+          if (!error.keyPattern?.orderNumber || attempt === 4) throw new AppError(409,'ORDER_REQUEST_CONFLICT');
         }
-        const {checkout}=await scopedCheckout(store,owner,checkoutId,session,at);
-        if (checkout.input.paymentMethod==='instapay' ? !proofId : proofId!==null) invalid();
-        const current=await cart.getForCoupon(store,owner,{session,locale:null,at});
-        if (selections(current)!==checkout.selections) throw new AppError(409,'CHECKOUT_CART_CHANGED');
-        const {preview}=await calculate(store,owner,checkout.input,session,at,orderId);
-        if (proofId && !await repository.attachProof(store,proofId,checkoutId,owned.ownerKey,orderId,at,session)) throw new AppError(409,'ORDER_PROOF_CONFLICT');
-        await products.adjustOrderStock(store,preview.items,{session});
-        const data={_id:orderId,store,...owned,checkoutId,requestDigest:digest,status:'pending',notificationLocale:locale,customer:checkout.input.customer,
-          address:checkout.input.address,items:preview.items,totals:preview.totals,shipping:preview.shipping,coupon:preview.coupon,
-          quotedPreview:checkout.preview,payment:{method:checkout.input.paymentMethod,proofId,receivingAccount:checkout.preview.receivingAccount,
-            verifiedAt:null,verifiedBy:null,cashCollectedAt:null,cashCollectedBy:null},refund:null,stockRestored:false,
-          history:[{status:'pending',at,actorId:null}],trackingExpiresAt:new Date(at.getTime()+90*24*60*60*1000)};
-        data.trackingHash=hash(tokenFor(data));
-        const row=await repository.create(data,session);await cart.consumeForOrder(store,owner,session);
-        await notifications?.enqueue({ store, resourceId: orderId, event: 'order.placed', resourceStatus: 'pending',
-          eventAt: at, to: row.customer.email, locale }, session);
-        return placementView(row,locale,true);
-      }); } catch(error) { if(error.code===11000) throw new AppError(409,'ORDER_REQUEST_CONFLICT');throw error; }
+      }
     },
     async list(store,identity,input={},locale='en',staff=false) {
       checkStore(store);const user=await auth.authorizeStaff(store,identity,staff ? staffRoles : ['user']);
@@ -200,7 +214,8 @@ export function createOrdersService({ auth, cart, products, coupons, shipping, s
         if(status==='delivered'&&row.payment.method==='cod'){
           fields['payment.cashCollectedAt']=at;fields['payment.cashCollectedBy']=actor._id;
         }
-        const changed=await repository.updateStatus(store,orderId,row.status,fields,{status,at,actorId:actor._id},session);
+        const changed=await repository.updateStatus(store,orderId,row.status,fields,
+          {status,at,actorId:actor._id,actor:{name:actor.name,role:actor.role}},session);
         if(!changed)throw new AppError(409,'ORDER_STATUS_CONFLICT');
         await notifications?.enqueue({ store, resourceId: id(changed._id), event: 'order.status', resourceStatus: status,
           eventAt: at, to: changed.customer.email, locale: changed.notificationLocale ?? 'en' }, session);
@@ -220,7 +235,7 @@ export function createOrdersService({ auth, cart, products, coupons, shipping, s
       const row = await repository.findTracking('b2c', ids(orderId)); if (!row) return null;
       const candidate = row.userId ? null : tokenFor(row);
       const valid = row.userId || (new Date(row.trackingExpiresAt) > now() && hash(candidate) === row.trackingHash);
-      return { name: row.customer.name, total: row.totals.total, trackingToken: valid ? candidate : null, canTrack: Boolean(valid) };
+      return { name: row.customer.name, orderNumber: row.orderNumber ?? null, total: row.totals.total, trackingToken: valid ? candidate : null, canTrack: Boolean(valid) };
     },
     async cleanupProofs() {
       storage.assertReady();const result={removed:0,failed:0};

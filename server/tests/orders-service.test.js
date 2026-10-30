@@ -9,9 +9,9 @@ import { shippingFixture } from './helpers/shipping.js';
 import { ordersFixture,checkoutInput } from './helpers/orders.js';
 import { simpleInput,variantInput } from './helpers/products.js';
 import { Order,OrderProof,Checkout } from '../src/modules/orders/orders.model.js';
-import { createOrdersService } from '../src/modules/orders/orders.service.js';
+import { createOrdersService, makeOrderNumber } from '../src/modules/orders/orders.service.js';
 
-const owner={_id:'1'.repeat(24),role:'superAdmin'},admin={_id:'2'.repeat(24),role:'admin'},mod={_id:'3'.repeat(24),role:'moderator'};
+const owner={_id:'1'.repeat(24),name:'Test Owner',role:'superAdmin'},admin={_id:'2'.repeat(24),name:'Test Admin',role:'admin'},mod={_id:'3'.repeat(24),name:'Test Moderator',role:'moderator'};
 const customer={_id:'4'.repeat(24),role:'user'},other={_id:'5'.repeat(24),role:'user'};
 const guest={guestToken:'a'.repeat(43)},stranger={guestToken:'b'.repeat(43)};
 const auth={async authorizeStaff(store,identity,roles){if(store!=='b2c'||!roles.includes(identity?.role))throw new AppError(403,'FORBIDDEN');return identity;}};
@@ -39,6 +39,7 @@ test('COD placement is atomic, snapshots current prices/fees, clears the cart an
   await f.sh.shipping.setDefault('b2c',owner,{defaultFee:6000});
   const placed=await f.service.place('b2c',guest,{checkoutId:quote.checkoutId});
   assert.equal(placed.created,true);assert.equal(placed.order.totals.total,66000);
+  assert.match(placed.order.orderNumber, /^NRM-20261012-[A-Z0-9]{6}$/);
   await new Order(f.rows.get(placed.order.id)).validate();
   assert.deepEqual(placed.order.items[0].category, { id:f.category.id,name:'Clothing' });
   await f.c.categories.update('b2c',admin,f.category.id,{name:{en:'New category name',ar:'اسم جديد'}});
@@ -50,11 +51,65 @@ test('COD placement is atomic, snapshots current prices/fees, clears the cart an
   assert.equal((await f.service.track('b2c',placed.order.id,placed.trackingToken,'ar')).items[0].name,'قميص');
   f.advance(2*24*60*60*1000);f.checkouts.clear();
   const retry=await f.service.place('b2c',guest,{checkoutId:quote.checkoutId});
+  assert.equal(retry.order.orderNumber, placed.order.orderNumber);
   assert.equal(retry.created,false);assert.equal(retry.trackingToken,placed.trackingToken);assert.equal(f.rows.size,1);assert.equal(f.p.rows.get(f.product.id).stock,8);
   await assert.rejects(f.service.place('b2c',stranger,{checkoutId:quote.checkoutId}),{code:'ORDER_NOT_FOUND'});
   await assert.rejects(f.service.place('b2c',guest,{checkoutId:quote.checkoutId,proofId:'f'.repeat(24)}),{code:'ORDER_REQUEST_CONFLICT'});
   await assert.rejects(f.service.track('b2c',placed.order.id,'c'.repeat(43)),{code:'ORDER_NOT_FOUND'});
   f.advance(90*24*60*60*1000);await assert.rejects(f.service.track('b2c',placed.order.id,placed.trackingToken),{code:'ORDER_NOT_FOUND'});
+});
+
+test('Order numbers use the Cairo calendar date, including midnight and daylight-saving changes', () => {
+  for (const [instant, date] of [
+    ['2026-10-28T20:59:59Z', '20261028'], ['2026-10-28T21:00:00Z', '20261029'],
+    ['2026-10-29T21:00:00Z', '20261029'], ['2026-10-29T22:00:00Z', '20261030'],
+    ['2026-10-30T21:59:59Z', '20261030'], ['2026-10-30T22:00:00Z', '20261031'],
+    ['2026-12-31T22:00:00Z', '20270101'],
+  ]) assert.match(makeOrderNumber(new Date(instant)), new RegExp(`^NRM-${date}-[A-Z0-9]{6}$`));
+});
+
+test('Order-number collisions retry the whole transaction without consuming stock, coupon or proof twice', async t => {
+  const f = await fixture();
+  await f.service.setSettings('b2c', admin, { receivingAccount: 'test-account' });
+  const coupon = await f.c.coupons.create('b2c', admin, couponInput({ maxUses: 1, maxUsesPerPerson: 1 }));
+  const quote = await f.service.preview('b2c', guest, checkoutInput({ paymentMethod: 'instapay', couponCode: coupon.code }));
+  const bytes = await sharp({ create: { width: 2, height: 2, channels: 3, background: 'white' } }).png().toBuffer();
+  const proof = await f.service.uploadProof('b2c', guest, quote.checkoutId, bytes, 'image/png');
+  const create = f.repository.create; let attempts = 0;
+  t.mock.method(f.repository, 'create', async (...args) => {
+    if (++attempts === 1) throw Object.assign(new Error('number collision'), { code: 11000, keyPattern: { orderNumber: 1 } });
+    return create(...args);
+  });
+  const placed = await f.service.place('b2c', guest, { checkoutId: quote.checkoutId, proofId: proof.id });
+  assert.equal(attempts, 2); assert.equal(f.rows.size, 1);
+  assert.equal(f.p.rows.get(f.product.id).stock, 8); assert.equal(f.c.rows.get(coupon.id).usedCount, 1);
+  assert.equal(f.c.redemptions.length, 1); assert.equal(f.proofs.get(proof.id).orderId, placed.order.id);
+  assert.equal((await f.c.cart.get('b2c', guest)).itemCount, 0);
+  assert.equal((await f.service.getStaff('b2c', mod, placed.order.id)).orderNumber, placed.order.orderNumber);
+  assert.equal((await f.service.track('b2c', placed.order.id, placed.trackingToken)).orderNumber, placed.order.orderNumber);
+});
+
+test('Collision retries are bounded, other unique-key conflicts are not retried, and legacy orders remain unnumbered', async t => {
+  const f = await fixture(), quote = await f.service.preview('b2c', guest, checkoutInput());
+  const create = f.repository.create; let attempts = 0;
+  const collision = t.mock.method(f.repository, 'create', async () => {
+    attempts++; throw Object.assign(new Error('number collision'), { code: 11000, keyPattern: { orderNumber: 1 } });
+  });
+  await assert.rejects(f.service.place('b2c', guest, { checkoutId: quote.checkoutId }), { code: 'ORDER_REQUEST_CONFLICT' });
+  assert.equal(attempts, 5); assert.equal(f.rows.size, 0); assert.equal(f.p.rows.get(f.product.id).stock, 10);
+  assert.equal((await f.c.cart.get('b2c', guest)).itemCount, 2);
+  collision.mock.mockImplementation(async () => {
+    attempts++; throw Object.assign(new Error('checkout collision'), { code: 11000, keyPattern: { checkoutId: 1 } });
+  });
+  await assert.rejects(f.service.place('b2c', guest, { checkoutId: quote.checkoutId }), { code: 'ORDER_REQUEST_CONFLICT' });
+  assert.equal(attempts, 6);
+  collision.mock.mockImplementation(create);
+  const placed = await f.service.place('b2c', guest, { checkoutId: quote.checkoutId });
+  delete f.rows.get(placed.order.id).orderNumber;
+  assert.equal((await f.service.getStaff('b2c', mod, placed.order.id)).orderNumber, null);
+  assert.equal((await f.service.place('b2c', guest, { checkoutId: quote.checkoutId })).order.orderNumber, null);
+  assert.equal((await transition(f, placed.order.id, 'pending', 'accepted')).orderNumber, null);
+  assert.equal(Object.hasOwn(f.rows.get(placed.order.id), 'orderNumber'), false);
 });
 
 test('Failed placement rolls back coupon use, stock, proof attachment and cart; cancel retains coupon use and restores once',async()=>{
@@ -111,11 +166,47 @@ test('Status changes enforce the graph, expected status, offline payment facts a
   await transition(f,oid,'delivered','returned');assert.equal(f.p.rows.get(f.product.id).stock,10);
 });
 
+test('Staff history snapshots the authorized name/role, preserves legacy entries, and stays private on customer reads', async t => {
+  const f = await fixture(), quote = await f.service.preview('b2c', guest, checkoutInput());
+  const placed = await f.service.place('b2c', guest, { checkoutId: quote.checkoutId });
+  const oid = placed.order.id, staff = { ...mod };
+  const authorize = auth.authorizeStaff;
+  t.mock.method(auth, 'authorizeStaff', async (...args) => {
+    const user = await authorize(...args);
+    return user._id === staff._id ? staff : user;
+  });
+  const initial = (await f.service.getStaff('b2c', mod, oid)).history[0];
+  assert.equal(initial.actorId, null); assert.equal(initial.actor, null);
+  const accepted = await f.service.changeStatus('b2c', { ...mod, name: 'Forged name', role: 'admin' }, oid,
+    { status: 'accepted', expectedStatus: 'pending', actor: { name: 'Forged', role: 'superAdmin' } });
+  assert.deepEqual(accepted.history[1].actor, { name: 'Test Moderator', role: 'moderator' });
+  assert.equal(accepted.history[1].actorId, mod._id);
+  staff.name = 'Renamed Staff'; staff.role = 'admin';
+  await transition(f, oid, 'pending', 'accepted');
+  assert.equal(f.rows.get(oid).history.length, 2);
+  const shipped = await transition(f, oid, 'accepted', 'shipped');
+  assert.deepEqual(shipped.history[1].actor, { name: 'Test Moderator', role: 'moderator' });
+  assert.deepEqual(shipped.history[2].actor, { name: 'Renamed Staff', role: 'admin' });
+  await new Order(f.rows.get(oid)).validate();
+  f.failWrite(true);
+  await assert.rejects(transition(f, oid, 'shipped', 'delivered'), /order write failed/);
+  assert.equal(f.rows.get(oid).history.length, 3); f.failWrite(false);
+  const tracked = await f.service.track('b2c', oid, placed.trackingToken);
+  assert.ok(tracked.history.every(event => !Object.hasOwn(event, 'actor') && !Object.hasOwn(event, 'actorId')));
+  delete f.rows.get(oid).history[1].actor;
+  const legacy = await f.service.getStaff('b2c', mod, oid);
+  assert.equal(legacy.history[1].actorId, mod._id); assert.equal(legacy.history[1].actor, null);
+  assert.equal(Object.hasOwn(f.rows.get(oid).history[1], 'actor'), false);
+  assert.equal((await f.service.list('b2c', mod, {}, 'en', true)).items[0].history[1].actor, null);
+});
+
 test('Account order ownership, guest privacy, bilingual snapshots and historical variant references survive catalog changes',async()=>{
   const f=await fixture(),variant=await f.c.products.create('b2c',owner,variantInput(f.category.id));
   const accountOwner={identity:customer};await f.c.cart.setItem('b2c',accountOwner,{productId:variant.id,variantId:variant.variants[0].id,quantity:2});
   const quote=await f.service.preview('b2c',accountOwner,checkoutInput()),placed=await f.service.place('b2c',accountOwner,{checkoutId:quote.checkoutId});
   assert.equal(placed.trackingToken,null);assert.equal(placed.trackingExpiresAt,null);
+  assert.equal((await f.service.getCustomer('b2c',customer,placed.order.id)).orderNumber,placed.order.orderNumber);
+  assert.equal((await f.service.list('b2c',customer)).items[0].orderNumber,placed.order.orderNumber);
   await new Order(f.rows.get(placed.order.id)).validate();
   assert.equal(f.p.rows.get(variant.id).variants[0].stock,3);
   assert.equal((await f.service.list('b2c',customer)).pagination.total,1);assert.equal((await f.service.list('b2c',other)).pagination.total,0);
@@ -126,6 +217,9 @@ test('Account order ownership, guest privacy, bilingual snapshots and historical
   await f.c.products.update('b2c',admin,variant.id,{version:1,name:{en:'Renamed'}});
   assert.equal((await f.service.getCustomer('b2c',customer,placed.order.id,'en')).items[0].name,'Shirt');
   await transition(f,placed.order.id,'pending','canceled');assert.equal(f.p.rows.get(variant.id).variants[0].stock,5);
+  for (const view of [await f.service.getCustomer('b2c',customer,placed.order.id), (await f.service.list('b2c',customer)).items[0]]) {
+    assert.ok(view.history.every(event => !Object.hasOwn(event,'actor') && !Object.hasOwn(event,'actorId')));
+  }
   assert.equal(await f.service.hasProductReferences('b2c',variant.id),true);
 });
 
@@ -175,8 +269,19 @@ test('Failed Bunny uploads keep durable cleanup work; failed cleanup retries and
 
 test('Order models require complete snapshots and unique checkout IDs without TTL deletion of orders or proof obligations',async()=>{
   assert.ok(Order.schema.indexes().some(([keys,options])=>keys.checkoutId===1&&options.unique));
+  assert.ok(Order.schema.indexes().some(([keys,options])=>keys.orderNumber===1&&options.unique&&options.partialFilterExpression.orderNumber.$type==='string'));
+  assert.equal(Order.schema.path('orderNumber').options.immutable, true);
+  for (const value of ['NMR-20261030-74M9Y3', 'NRM-20261030-74m9y3', 'NRM-20261030-74M9Y', null]) {
+    await assert.rejects(new Order({ orderNumber: value }).validate(), error => Boolean(error.errors.orderNumber));
+  }
   assert.equal(Order.schema.indexes().some(([,options])=>options.expireAfterSeconds!==undefined),false);
   assert.equal(OrderProof.schema.indexes().some(([,options])=>options.expireAfterSeconds!==undefined),false);
   assert.ok(Checkout.schema.indexes().some(([keys,options])=>keys.expiresAt===1&&options.expireAfterSeconds===0));
   await assert.rejects(new Order({store:'b2c'}).validate(),{name:'ValidationError'});
+  const history = Order.schema.path('history');
+  for (const actor of [{ name: 'Staff', role: 'user' }, { name: '', role: 'admin' }, { name: 'Staff' }, { name: 'x'.repeat(101), role: 'moderator' }]) {
+    await assert.rejects(new Order({ history: [{ status:'accepted',at:new Date(),actorId:mod._id,actor }] }).validate(),
+      error => Object.keys(error.errors).some(key => key.startsWith('history.0.actor.')));
+  }
+  assert.equal(history.schema.path('actor').options.default, null);
 });

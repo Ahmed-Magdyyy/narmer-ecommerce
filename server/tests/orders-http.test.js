@@ -56,10 +56,13 @@ test('Checkout and Orders HTTP enforces guest/customer/staff ownership, private 
   const quote=await req('b2c/cart/checkout',{method:'POST',cookie,locale:'ar',body:{...checkoutInput(),total:1,userId:'f'.repeat(24)}});
   assert.equal(quote.status,200);assert.equal(quote.cache,'no-store');assert.equal(quote.data.data.items[0].name,'قميص');
   assert.equal(quote.data.data.totals.total,55000);assert.equal(quote.data.data.receivingAccount,null);
-  const placement={checkoutId:quote.data.data.checkoutId},created=await req('b2c/cart/checkout/orders',{method:'POST',cookie,body:{...placement,status:'delivered',totals:{total:0}}});
+  const placement={checkoutId:quote.data.data.checkoutId},created=await req('b2c/cart/checkout/orders',{method:'POST',cookie,body:{...placement,orderNumber:'NRM-20000101-FAKE00',status:'delivered',totals:{total:0}}});
   assert.equal(created.status,201);assert.equal(created.data.data.order.status,'pending');assert.equal(created.data.data.order.totals.total,55000);
   assert.deepEqual(Object.keys(created.data.data).sort(),['order','trackingExpiresAt','trackingToken']);
   const oid=created.data.data.order.id,tracking=created.data.data.trackingToken;
+  const number=created.data.data.order.orderNumber;
+  assert.match(number,/^NRM-\d{8}-[A-Z0-9]{6}$/);assert.notEqual(number,'NRM-20000101-FAKE00');
+  assert.equal((await req('b2c/cart/checkout/orders',{method:'POST',cookie,body:placement})).data.data.order.orderNumber,number);
   assert.equal((await req('b2c/cart/checkout/orders',{method:'POST',cookie,body:placement})).status,200);
   assert.equal((await req(`b2c/orders/tracking/${oid}`)).status,404);
   assert.equal((await req(`b2c/orders/tracking/${oid}`,{tracking})).status,200);
@@ -69,6 +72,10 @@ test('Checkout and Orders HTTP enforces guest/customer/staff ownership, private 
   assert.equal((await req('admin/b2c/orders',{token:tokens.moderator})).data.data.pagination.total,1);
   const staffDetail=await req(`admin/b2c/orders/${oid}`,{token:tokens.moderator});
   assert.equal(staffDetail.status,200);assert.equal(staffDetail.data.data.items[0].category.id,category.id);
+  assert.equal(staffDetail.data.data.orderNumber,number);
+  assert.equal(staffDetail.data.data.history[0].actor,null);
+  assert.equal((await req('admin/b2c/orders',{token:tokens.moderator})).data.data.items[0].orderNumber,number);
+  assert.equal((await req(`b2c/orders/tracking/${oid}`,{tracking})).data.data.orderNumber,number);
   const capturedCategory=o.rows.get(oid).items[0].category;
   o.rows.get(oid).items[0].category=null;
   assert.equal((await req(`admin/b2c/orders/${oid}`,{token:tokens.moderator})).data.data.items[0].category,null);
@@ -78,8 +85,14 @@ test('Checkout and Orders HTTP enforces guest/customer/staff ownership, private 
   assert.equal((await req('admin/b2c/orders/settings',{token:tokens.moderator})).status,403);
   assert.equal((await req('admin/b2c/orders/settings',{method:'PATCH',token:tokens.admin,body:{receivingAccount:12}})).status,422);
   assert.equal((await req('admin/b2c/orders/settings',{method:'PATCH',token:tokens.admin,body:{receivingAccount:' narmer@instapay '}})).data.data.receivingAccount,'narmer@instapay');
-  const accepted=await req(`admin/b2c/orders/${oid}/status`,{method:'PATCH',token:tokens.moderator,body:{status:'accepted',expectedStatus:'pending'}});
+  const accepted=await req(`admin/b2c/orders/${oid}/status`,{method:'PATCH',token:tokens.moderator,body:{status:'accepted',expectedStatus:'pending',actorId:'f'.repeat(24),actor:{name:'Forged',role:'superAdmin'}}});
   assert.equal(accepted.status,200);assert.ok(accepted.data.data.quotedPreview);assert.equal(accepted.data.data.stockRestored,false);
+  assert.equal(accepted.data.data.orderNumber,number);
+  assert.deepEqual(accepted.data.data.history[1].actor,{name:input.name,role:'moderator'});
+  assert.notEqual(accepted.data.data.history[1].actorId,'f'.repeat(24));
+  assert.deepEqual((await req(`admin/b2c/orders/${oid}`,{token:tokens.admin})).data.data.history[1].actor,accepted.data.data.history[1].actor);
+  assert.deepEqual((await req('admin/b2c/orders',{token:tokens.admin})).data.data.items[0].history[1].actor,accepted.data.data.history[1].actor);
+  assert.ok((await req(`b2c/orders/tracking/${oid}`,{tracking})).data.data.history.every(event=>!Object.hasOwn(event,'actor')&&!Object.hasOwn(event,'actorId')));
   assert.equal((await req(`admin/b2c/orders/${oid}/status`,{method:'PATCH',token:tokens.admin,body:{status:'canceled',expectedStatus:'pending'}})).data.code,'ORDER_STATUS_CONFLICT');
   assert.equal((await req(`admin/b2c/products/${product.id}`,{method:'DELETE',token:superToken})).data.code,'PRODUCT_REFERENCED');
   assert.equal((await req(`admin/b2c/orders/${oid}`,{method:'DELETE',token:superToken})).status,404);
@@ -105,4 +118,10 @@ test('Checkout and Orders HTTP enforces guest/customer/staff ownership, private 
   assert.equal(userOrder.data.data.trackingToken,null);assert.equal((await req(`b2c/orders/${userOrder.data.data.order.id}`,{token:tokens.user})).status,200);
   assert.equal((await req(`b2c/orders/${userOrder.data.data.order.id}`,{token:tokens.other})).status,404);
   assert.equal((await req('b2c/orders',{token:tokens.user})).data.data.pagination.total,1);
+  const accountId=userOrder.data.data.order.id;
+  await req(`admin/b2c/orders/${accountId}/status`,{method:'PATCH',token:tokens.admin,body:{status:'accepted',expectedStatus:'pending'}});
+  for(const response of [await req(`b2c/orders/${accountId}`,{token:tokens.user}),await req('b2c/orders',{token:tokens.user})]) {
+    const order=response.data.data.history?response.data.data:response.data.data.items[0];
+    assert.ok(order.history.every(event=>!Object.hasOwn(event,'actor')&&!Object.hasOwn(event,'actorId')));
+  }
 });

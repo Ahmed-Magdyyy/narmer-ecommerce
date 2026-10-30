@@ -12,7 +12,7 @@ const text = file => readFileSync(resolve(root, file), 'utf8');
 const portable = value => value.split(sep).join('/');
 const mapping = new Map();
 function include(source, target) { mapping.set(resolve(root, source), resolve(destination, target)); }
-for (const name of ['README.md', 'api-conventions.md', 'b2c-flow.md', 'b2b-flow.md', 'integration-readiness.md', 'documentation-audit.md', 'handoff-audit.md', 'backend-response.md', 'size-chart-backend-response.md', 'account-creation-password-change.md', 'wholesale-stable-urls.md']) include(`docs/frontend/${name}`, name);
+for (const name of ['README.md', 'api-conventions.md', 'b2c-flow.md', 'b2b-flow.md', 'integration-readiness.md', 'documentation-audit.md', 'handoff-audit.md', 'backend-response.md', 'size-chart-backend-response.md', 'account-creation-password-change.md', 'wholesale-stable-urls.md', 'order-number-and-history-frontend-response.md']) include(`docs/frontend/${name}`, name);
 const moduleRoot = resolve(root, 'server/src/modules');
 const modules = readdirSync(moduleRoot, { withFileTypes: true }).filter(item => item.isDirectory()).map(item => item.name).sort();
 for (const module of modules) {
