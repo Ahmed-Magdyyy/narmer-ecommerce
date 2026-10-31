@@ -1,8 +1,14 @@
 import nodemailer from 'nodemailer';
+import { fileURLToPath } from 'node:url';
 import { AppError } from '../../errors/app-error.js';
+import { logoCid, renderOtpEmail } from './templates.js';
+
+const logo = { filename: 'narmer-logo.png', path: fileURLToPath(new URL('./assets/narmer-logo.png', import.meta.url)),
+  cid: logoCid, contentType: 'image/png', contentDisposition: 'inline' };
 
 export function createEmailSender(config) {
   const smtp = config.smtp;
+  const from = smtp ? { name: 'Narmer', address: /<([^<>]+)>\s*$/.exec(smtp.from)?.[1] ?? smtp.from } : null;
   const transport = smtp ? nodemailer.createTransport({
     host: smtp.host, port: smtp.port, secure: smtp.port === 465, requireTLS: smtp.port !== 465,
     auth: { user: smtp.user, pass: smtp.password },
@@ -12,19 +18,14 @@ export function createEmailSender(config) {
     assertReady() {
       if (!transport) throw new AppError(503, 'EMAIL_UNAVAILABLE');
     },
-    async sendNotification({ to, subject, text }) {
+    async sendNotification({ to, subject, text, html }) {
       if (!transport) throw new AppError(503, 'EMAIL_UNAVAILABLE');
-      await transport.sendMail({ from: smtp.from, to: { address: to }, subject, text });
+      await transport.sendMail({ from, to: { address: to }, subject, text,
+        ...(html ? { html, attachments: [{ ...logo }] } : {}) });
     },
-    async sendOtp({ to, store, purpose, code, locale }) {
+    async sendOtp({ to, purpose, code, locale }) {
       if (!transport) throw new AppError(503, 'EMAIL_UNAVAILABLE');
-      const ar = locale === 'ar';
-      const title = purpose === 'verify-email'
-        ? (ar ? 'تأكيد البريد الإلكتروني' : 'Confirm your email')
-        : (ar ? 'إعادة تعيين كلمة المرور' : 'Reset your password');
-      await transport.sendMail({ from: smtp.from, to, subject: `Narmer ${store.toUpperCase()} - ${title}`,
-        text: ar ? `رمز التحقق: ${code}\nصالح لمدة 10 دقائق. لا تشارك هذا الرمز مع أي شخص.`
-          : `Your code is: ${code}\nIt expires in 10 minutes. Do not share this code with anyone.` });
+      await transport.sendMail({ from, to: { address: to }, ...renderOtpEmail({ purpose, code, locale }), attachments: [{ ...logo }] });
     },
   };
 }

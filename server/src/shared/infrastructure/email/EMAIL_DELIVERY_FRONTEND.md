@@ -1,12 +1,12 @@
 # Customer email delivery infrastructure
 
-Last checked against the email delivery worker, queue model/repository, environment parser, sender, lifecycle scheduler, and Orders/Leads event sources on 2026-10-13. This is internal delivery infrastructure, not a resource API. It has no HTTP controller, route, request validator, or customer/staff CRUD endpoint. Business events remain owned by the existing Orders and Leads modules and are enqueued through the infrastructure inside their existing transactions.
+Last checked against the email delivery worker, queue model/repository, environment parser, sender, branded templates, lifecycle scheduler, and Auth/Orders/Leads event sources on 2026-10-31. This is internal delivery infrastructure, not a resource API. It has no HTTP controller, route, request validator, or customer/staff CRUD endpoint. Business events remain owned by the existing Orders and Leads modules and are enqueued through the infrastructure inside their existing transactions.
 
 Read this with [shared API conventions](../../../../../docs/frontend/api-conventions.md), [B2C Orders](../../../modules/orders/ORDERS_FRONTEND.md), and [B2B Leads](../../../modules/leads/LEADS_FRONTEND.md). Public response envelopes and DTOs are unchanged; no email delivery state is exposed to frontend clients.
 
 ## What sends an email
 
-When delivery is enabled for a side, the worker sends one plain-text notification for each of these committed events:
+When delivery is enabled for a side, the worker sends one branded HTML notification with a matching plain-text alternative for each of these committed events:
 
 | Store | Internal event | When enqueued | Recipient snapshot | Notification language |
 | --- | --- | --- | --- | --- |
@@ -56,11 +56,11 @@ Guest tracking credentials expire 90 days after order placement or lead submissi
 
 ## Message content
 
-The worker creates one text-only message; there are no attachments or HTML templates in this slice. Subject is <code>Narmer - Order update</code> for B2C and <code>Narmer - Request update</code> for B2B, with Arabic subject equivalents when the saved notification locale is Arabic. Body is composed from saved locale and event:
+The worker creates one HTML message with a matching plain-text alternative and the supplied Narmer logo as a fixed inline PNG attachment. Each event/status has its own English/Arabic subject and body, listed below. Generated subjects and content use only Narmer branding, without B2B/B2C labels. The sender display name is always Narmer; the mailbox comes from SMTP_FROM. Body is composed from saved locale and event:
 
 - Greeting with name read from the current resource snapshot.
 - A received confirmation for <code>order.placed</code> and <code>lead.submitted</code>; other events say an update was recorded.
-- Resource reference, event's recorded status, and event timestamp in ISO-8601 form. B2C uses the persisted `orderNumber` when present and falls back to the MongoDB Order ID for existing unnumbered Orders. B2B keeps its Lead ID. Tracking links and queue resource IDs always retain the MongoDB ID; a readable reference does not grant access.
+- Resource reference and event's recorded status. Plain text retains the ISO UTC event timestamp; HTML displays it in Africa/Cairo with a Cairo label. B2C uses the persisted `orderNumber` when present and falls back to the MongoDB Order ID for existing unnumbered Orders. B2B keeps its Lead ID. Tracking links and queue resource IDs always retain the MongoDB ID; a readable reference does not grant access.
 - B2C Orders only: order total formatted as EGP from the stored integer amount in minor units. No bank/payment verification claim is made.
 - For <code>canceled</code> or <code>returned</code> B2C statuses, a sentence says staff handles any refund offline. It does not claim that a refund has been issued.
 - If a valid link is available, a “Track the latest status” link and a warning to keep it private.
@@ -68,7 +68,7 @@ The worker creates one text-only message; there are no attachments or HTML templ
 
 The status and timestamp in an email describe the queued event. Delivery may be delayed, and the resource can have a later status by the time the recipient opens the email. The link is intended to show the latest status available through the applicable tracking/account read.
 
-The worker looks up the current resource before rendering. For Orders it reads customer name and total plus whether a guest tracking token is still reproducible; for Leads it reads contact name and whether a guest tracking token is reproducible, or whether an authenticated customer can use the account path. It does not attach order proof images, lead images, receipts, bank details, or full form answers.
+The worker looks up the current resource before rendering. For Orders it reads customer name, orderNumber and total plus whether a guest tracking token is still reproducible; for Leads it reads contact name and whether a guest tracking token is reproducible, or whether an authenticated customer can use the account path. It does not attach order proof images, lead images, receipts, bank details, or full form answers. The inline logo is the only application-added attachment.
 
 ## Internal queue record
 
@@ -141,3 +141,34 @@ The expanded combined database proof is available as npm --prefix server run tes
 ## Order-history actor scope
 
 The Order `history[].actor` name/role snapshot is staff-only response data. Transactional customer emails keep the order-number/legacy-ID reference and existing ID/token tracking link; they do not include staff names, roles or history actor snapshots. The queue and B2B references are unchanged.
+
+## Branded email template catalog (2026-10-31)
+
+The sender covers ten existing email types in both English and Arabic. Every subject starts with `Narmer - `. Internal store separation remains an authorization/routing concern; B2B/B2C labels are not inserted into the sender display name, subjects, headings or body. These templates do not add marketing mail, staff mail, a new event or any HTTP endpoint.
+
+| Existing trigger | English subject after Narmer prefix | Arabic subject after Narmer prefix | Content and action |
+| --- | --- | --- | --- |
+| Auth verify-email, including resend of that purpose | Confirm your email | تأكيد البريد الإلكتروني | Confirmation instructions, the original six-character OTP, ten-minute expiry, do-not-share and ignore-if-unrequested guidance. No action URL or tracking token. |
+| Auth reset-password, including replacement reset challenges | Reset your password | إعادة تعيين كلمة المرور | Password-reset instructions and the same OTP expiry/privacy guidance. No claim that the password has already changed. |
+| order.placed / pending | Order received | استلمنا طلبك | Receipt and pending review, saved reference, total and event time; existing private order link when available. |
+| order.status / accepted | Your order is accepted | تم قبول طلبك | Accepted status and existing private order link. No additional payment/fulfillment promise. |
+| order.status / shipped | Your order is on its way | طلبك في الطريق إليك | Recorded shipped status and existing order link. No invented carrier, tracking number, ETA or shipping endpoint. |
+| order.status / delivered | Your order is delivered | تم تسليم طلبك | Recorded delivered status and order link. |
+| order.status / canceled | Your order is canceled | تم إلغاء طلبك | Recorded cancellation and order link; any refund is handled offline and the email does not confirm it was issued. |
+| order.status / returned | Your order is returned | تم إرجاع طلبك | Recorded returned status, order link and the same offline-refund qualification. |
+| lead.submitted / submitted | Request received | استلمنا طلب الخدمة | Request receipt, existing Lead ID, recorded status/time and private request link when available. No order total or payment step. |
+| lead.contacted / contacted | An update on your request | تحديث على طلب الخدمة | Explains that staff marked the request as contacted; no claim of a new actual call, scheduled appointment, quote or payment. |
+
+The shared design uses the supplied original logo, a navy accent (#003e52), a light background, a white table-based card capped at 600 pixels, inline CSS, readable system fonts and a hidden non-sensitive preheader. Arabic sets lang=ar and dir=rtl; English uses lang=en and dir=ltr. OTP digits are left-to-right and preserve leading zeroes. Dynamic names, references, codes, labels and link attributes are HTML-escaped. Notification URLs must be HTTP(S) without embedded credentials; existing environment validation still requires HTTPS in production and keeps token substitution in the fragment. Unsupported event/store/status combinations fail rendering and follow the existing bounded delivery failure path.
+
+B2C amount formatting remains stored piastres divided by 100 into localized EGP display. Notifications use the queued status/time, so delayed messages can describe an older event; the view button opens current state. HTML uses a Cairo-labeled localized time; plain text keeps ISO UTC. If tracking is unavailable, neither alternative creates a link/button; both retain the saved-link/contact-staff fallback. Valid links retain the privacy warning and existing ID/token transport. No personal staff history, proof, form answers, banking credentials, remote image pixel or external font is added.
+
+SMTP still uses the configured sender mailbox and credentials. SMTP_FROM may contain a bare mailbox or a display-name/mailbox form such as `Narmer <sender@example.test>`; the configured display name is replaced with Narmer while preserving the mailbox. No environment edit, new variable, URL upload, CDN dependency or new package is required. Direct internal text-only sendNotification calls remain supported without a logo attachment, but all ten application email types use HTML plus text.
+
+The runtime logo is `server/src/shared/infrastructure/email/assets/narmer-logo.png`, a transparent PNG conversion of the supplied WebP without changing its design. The application attaches it as filename narmer-logo.png, MIME image/png, disposition inline, content ID narmer-logo, and references `cid:narmer-logo` in HTML with alt text Narmer. The logo is the only attachment and carries no customer data. Keep this asset alongside the runtime on the VPS. The current Vercel builder explicitly includes this one file in its function bundle through builds[].config.includeFiles; this is packaging, not public static hosting. Missing/inaccessible assets can cause mail construction to fail; Auth retains EMAIL_UNAVAILABLE recovery and queued notifications retain their existing retry behavior.
+
+The templates change presentation only: Auth challenge generation/hash, purpose/store ownership, expiry, resend/attempt limits, queue enablement, event deduplication, transaction rollback, leases, retry/backoff, source lookup and disabled-side behavior remain unchanged. Pending jobs use the new templates when rendered after deployment; this does not enqueue old missed events or resend completed jobs. A send can still be duplicated if SMTP accepts it before a failed queue acknowledgment. Reverting the sender/template code restores the previous presentation without a data migration.
+
+Frontend work: no request/response field or screen flow changes. Keep OTP entry, resend/expiry handling, private fragment extraction and ID-based order/request reads exactly as documented. The HTML view button is an email anchor, not a new API endpoint. Rendered browser previews with synthetic data are review artifacts; desktop/mobile browser appearance and stream-transport MIME proof do not establish Gmail, Outlook, Apple Mail, SMTP deliverability or deployed asset availability.
+
+Local verification for the branded email update: all 30 distinct focused Auth service/HTTP, template/MIME, delivery/queue, transaction and Vercel configuration checks pass across scoped runs. Twenty synthetic English/Arabic variants were checked at a 320px browser width: no horizontal overflow and every logo loaded. Representative desktop/mobile screenshots were inspected. The local API export still validates 166 operations with unchanged request/response fields. No live SMTP, Gmail/Outlook/Apple Mail, deployed Vercel bundle, database or actual customer delivery was verified.

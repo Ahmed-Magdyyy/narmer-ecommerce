@@ -13,6 +13,8 @@ test('Vercel routing targets the exported handler and concurrent requests share 
   const configuration = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
   assert.equal(configuration.builds[0].src, 'src/app/vercel.js');
   assert.equal(configuration.routes[0].dest, configuration.builds[0].src);
+  assert.deepEqual(configuration.builds[0].config.includeFiles,['src/shared/infrastructure/email/assets/narmer-logo.png']);
+  assert.ok(readFileSync(new URL('../'+configuration.builds[0].config.includeFiles[0],import.meta.url)).length>0);
   let connections = 0, initializations = 0, apps = 0, completed = false;
   let release;
   const gate = new Promise(resolve => { release = resolve; });

@@ -674,3 +674,7 @@ Staff history adds required nullable actor alongside actorId. A non-null actor i
 Staff list/detail/status and Reports recentOrders expose both fields. Customer placement/replay/list/detail and guest tracking omit both. Refund/payment markers are unchanged. Rename **Staff reference** to **By**: initial pending with null actorId shows **Order placed**; saved actors show **Moderator: {{actor.name}}**, **Admin: {{actor.name}}** or **Super admin: {{actor.name}}**; uncaptured events show **Staff member unavailable**. Do not display IDs, guess actors, query current profiles per row or label other null snapshots as placement.
 
 Existing {status,expectedStatus} requests, roles, errors, rate limits and no-store rules remain. Reload on 409 ORDER_STATUS_CONFLICT. See the [combined FE response](../../../../docs/frontend/order-number-and-history-frontend-response.md) for full field tables, synthetic actor examples, privacy, frontend display logic and acceptance checks.
+
+## Branded order emails (2026-10-31)
+
+Placement and each existing status email now use localized Narmer HTML/text templates with the logo and event-specific wording. Order references, private links, offline-refund qualifications and delivery retry semantics remain as documented. No frontend/API field or action changes. See [email delivery](../../shared/infrastructure/email/EMAIL_DELIVERY_FRONTEND.md).

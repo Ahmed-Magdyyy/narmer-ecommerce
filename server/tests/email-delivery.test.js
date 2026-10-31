@@ -33,13 +33,19 @@ test('notification templates enable each store explicitly and reject token query
   assert.throws(() => readEnv({ ...testEnv, ...smtp, NODE_ENV: 'production', B2C_TRACKING_URL_TEMPLATE: 'http://shop.example/{id}#{token}' }), /HTTPS/);
 });
 
-test('SMTP notification sender reuses transport/from, sends one plain-text mailbox and preserves OTP transport', async t => {
+test('SMTP sender preserves mailbox/TLS transport and adds branded HTML with an inline logo', async t => {
   const sent = []; t.mock.method(nodemailer, 'createTransport', () => ({ async sendMail(message) { sent.push(message); } }));
   const email = createEmailSender(readEnv({ ...testEnv, ...smtp }));
   await email.sendNotification({ to: 'buyer@example.com', subject: 'Order update', text: 'Private text' });
-  assert.deepEqual(sent[0], { from: smtp.SMTP_FROM, to: { address: 'buyer@example.com' }, subject: 'Order update', text: 'Private text' });
+  assert.deepEqual(sent[0], { from: {name:'Narmer',address:'sender@example.com'}, to: { address: 'buyer@example.com' }, subject: 'Order update', text: 'Private text' });
   await email.sendOtp({ to: 'buyer@example.com', store: 'b2b', purpose: 'verify-email', code: '012345', locale: 'ar' });
-  assert.ok(sent[1].text.includes('012345')); assert.equal(sent[1].html, undefined);
+  assert.ok(sent[1].text.includes('012345')); assert.ok(sent[1].html.includes('012345'));
+  assert.equal(sent[1].subject,'Narmer - تأكيد البريد الإلكتروني');
+  assert.match(sent[1].html, /lang="ar" dir="rtl"/);
+  assert.equal(sent[1].attachments[0].cid,'narmer-logo');
+  assert.equal(sent[1].attachments[0].contentType,'image/png');
+  await email.sendNotification({to:'buyer@example.com',subject:'Narmer - Order received',text:'Text fallback',html:'<p>Order received</p>'});
+  assert.equal(sent[2].attachments[0].cid,'narmer-logo');
   await assert.rejects(createEmailSender(readEnv(testEnv)).sendNotification({}), { code: 'EMAIL_UNAVAILABLE' });
 });
 
@@ -52,6 +58,7 @@ test('delivery is disabled by store/SMTP, deduplicates committed events and neve
   await Promise.all([f.service.enqueue(event(f), {}), f.service.enqueue(event(f), {})]); assert.equal(f.rows.size, 1);
   await Promise.all([f.service.drain(), f.service.drain()]); assert.equal(f.messages.length, 1);
   assert.ok(f.messages[0].text.includes(`#${source.trackingToken}`));
+  assert.ok(f.messages[0].html.includes(`#${source.trackingToken}`));
   assert.ok(f.messages[0].text.includes(`Reference: ${event(f).resourceId}`));
   assert.ok(!JSON.stringify([...f.rows.values()]).includes(source.trackingToken)); assert.deepEqual(f.logs, []);
   f.config.smtp = null; assert.deepEqual(await f.service.drain(), { sent: 0, failed: 0, skipped: 0 });
@@ -129,6 +136,8 @@ test('Order emails are atomic with stock/cart, preserve buyer locale and enqueue
   assert.ok(d.messages[1].text.includes('خارج النظام'));
   assert.ok(d.messages.every(message => message.text.includes(`رقم الطلب: ${receipt.order.orderNumber}`)));
   assert.ok(d.messages.every(message => message.text.includes(receipt.order.id)));
+  assert.ok(d.messages.every(message => message.html.includes(receipt.order.orderNumber)));
+  assert.ok(d.messages.every(message => !/Narmer\s+B2[BC]\b/i.test(message.subject+message.text+message.html)));
   const rotated = createOrdersService({ repository: f.repository, trackingSecret: 'changed-order-key', now: f.now });
   assert.equal((await rotated.getEmailSource(receipt.order.id)).canTrack, false);
   assert.equal((await rotated.track('b2c', receipt.order.id, receipt.trackingToken)).id, receipt.order.id);
